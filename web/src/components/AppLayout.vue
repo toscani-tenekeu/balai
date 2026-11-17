@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useColorMode } from '@vueuse/core'
 import {
-  BrushCleaningIcon, CpuIcon, HardDriveIcon, HistoryIcon, LayoutDashboardIcon, LogOutIcon,
+  BrushCleaningIcon, CpuIcon, FileSearchIcon, HardDriveIcon, HistoryIcon, LayoutDashboardIcon, LogOutIcon,
   MoonIcon, NetworkIcon, PackageIcon, ServerCogIcon, SettingsIcon, SunIcon, Trash2Icon,
 } from '@lucide/vue'
 import { onMounted } from 'vue'
@@ -26,6 +26,7 @@ const links = [
   { to: '/services', label: 'Services', icon: ServerCogIcon },
   { to: '/cleanup', label: 'Cleanup', icon: Trash2Icon },
   { to: '/disk', label: 'Disk', icon: HardDriveIcon },
+  { to: '/files', label: 'Files', icon: FileSearchIcon },
   { to: '/packages', label: 'Packages', icon: PackageIcon },
   { to: '/ports', label: 'Ports', icon: NetworkIcon },
   { to: '/activity', label: 'Activity', icon: HistoryIcon },

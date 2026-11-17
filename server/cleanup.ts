@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { logActivity } from './db.ts'
+import { getSetting, logActivity, setSetting } from './db.ts'
 import { memory } from './metrics.ts'
 import { has, lines, reason, run } from './sys.ts'
 
@@ -147,6 +147,58 @@ async function dockerReclaimable(): Promise<number> {
   return bytes
 }
 
+const BIG_LOG = 100 * 1024 ** 2
+const bigLogs = () =>
+  findFiles('/var/log', (path) => !path.startsWith('/var/log/journal/') && !ROTATED.test(path))
+    .filter((file) => file.size >= BIG_LOG)
+
+/** Download caches of language tools. Each one is refilled on the next install. */
+const TOOL_CACHES = [
+  '.npm/_cacache', '.bun/install/cache', '.cache/pip', '.cache/yarn', '.cache/pnpm', '.cache/composer',
+  '.composer/cache', '.cache/go-build', '.cargo/registry/cache', '.gradle/caches', '.cache/pypoetry/cache',
+]
+const toolCaches = () => homes().flatMap((home) => TOOL_CACHES.map((dir) => join(home, dir)))
+
+interface SnapRevision {
+  name: string
+  revision: string
+  file: string
+}
+
+async function oldSnaps(): Promise<SnapRevision[]> {
+  const result = await run(['snap', 'list', '--all'], { timeout: 30_000 })
+  return lines(result.stdout)
+    .map((line) => line.split(/\s+/))
+    .filter((parts) => parts.length >= 6 && parts.at(-1)!.split(',').includes('disabled'))
+    .map((parts) => ({
+      name: parts[0]!,
+      revision: parts[2]!,
+      file: `/var/lib/snapd/snaps/${parts[0]}_${parts[2]}.snap`,
+    }))
+}
+
+async function leftoverConfigs(): Promise<string[]> {
+  const result = await run(['dpkg-query', '-W', '-f=${db:Status-Abbrev}\\t${binary:Package}\\n'], { timeout: 30_000 })
+  return result.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('rc'))
+    .map((line) => line.split('\t')[1]!)
+    .filter(Boolean)
+}
+
+async function stoppedContainers(): Promise<string[]> {
+  const result = await run(['docker', 'ps', '-a', '--filter', 'status=exited', '--filter', 'status=dead', '--format', '{{.ID}}'])
+  return lines(result.stdout)
+}
+
+async function unusedImages(): Promise<number> {
+  const result = await run(['docker', 'system', 'df', '--format', '{{.Type}}\t{{.Reclaimable}}'])
+  const images = lines(result.stdout).find((line) => line.startsWith('Images'))
+  return images ? parseSize(images.split('\t')[1] ?? '') : 0
+}
+
+const count = (items: unknown[], word: string) => `${items.length} ${word}${items.length === 1 ? '' : 's'}`
+
 const apt = (args: string[], timeout = 300_000) =>
   run(['apt-get', ...args], { timeout, env: { DEBIAN_FRONTEND: 'noninteractive' } })
 
@@ -230,6 +282,35 @@ const tasks: Task[] = [
     },
   },
   {
+    id: 'core-dumps',
+    title: 'Core dumps',
+    description: 'Memory images systemd saved when a program crashed. Only useful to someone debugging that crash.',
+    recommended: true,
+    kind: 'disk',
+    available: () => existsSync('/var/lib/systemd/coredump'),
+    measure: async () => ({ bytes: await contentSize(['/var/lib/systemd/coredump']) }),
+    clean: async () => {
+      emptyDirs(['/var/lib/systemd/coredump'])
+      return { ok: true }
+    },
+  },
+  {
+    id: 'snap-old',
+    title: 'Old snap revisions',
+    description: 'Earlier versions of snap packages kept after an update. The version in use stays.',
+    recommended: true,
+    kind: 'disk',
+    available: () => has('snap'),
+    measure: async () => ({ bytes: await sizeOf((await oldSnaps()).map((snap) => snap.file)) }),
+    clean: async () => {
+      for (const snap of await oldSnaps()) {
+        const result = await run(['snap', 'remove', snap.name, `--revision=${snap.revision}`], { timeout: 300_000 })
+        if (!result.ok) return { ok: false, message: reason(result, 'snap remove failed.') }
+      }
+      return { ok: true }
+    },
+  },
+  {
     id: 'trash',
     title: 'Trash',
     description: 'Deleted files still waiting in each user’s trash folder.',
@@ -254,6 +335,79 @@ const tasks: Task[] = [
       const builder = await run(['docker', 'builder', 'prune', '-f'], { timeout: 300_000 })
       const failed = [images, builder].find((result) => !result.ok)
       return { ok: !failed, message: failed ? reason(failed, 'docker prune failed.') : undefined }
+    },
+  },
+  {
+    id: 'docker-containers',
+    title: 'Stopped Docker containers',
+    description:
+      'Containers that have exited. Anything written inside them that is not in a volume is lost, so check that none is only paused on purpose.',
+    recommended: false,
+    kind: 'disk',
+    available: () => has('docker'),
+    measure: async () => ({ bytes: null, note: count(await stoppedContainers(), 'container') }),
+    clean: async () => {
+      const result = await run(['docker', 'container', 'prune', '-f'], { timeout: 300_000 })
+      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'docker prune failed.') }
+    },
+  },
+  {
+    id: 'docker-images',
+    title: 'Unused Docker images',
+    description: 'Every image that no container uses, tagged or not. They are downloaded or built again when needed.',
+    recommended: false,
+    kind: 'disk',
+    available: () => has('docker'),
+    measure: async () => ({ bytes: await unusedImages() }),
+    clean: async () => {
+      const result = await run(['docker', 'image', 'prune', '-a', '-f'], { timeout: 600_000 })
+      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'docker prune failed.') }
+    },
+  },
+  {
+    id: 'leftover-config',
+    title: 'Settings of removed packages',
+    description: 'Configuration files left behind by packages that were uninstalled. Reinstalling one starts from its defaults.',
+    recommended: false,
+    kind: 'disk',
+    measure: async () => ({ bytes: null, note: count(await leftoverConfigs(), 'package') }),
+    clean: async () => {
+      const names = await leftoverConfigs()
+      if (!names.length) return { ok: true }
+      const result = await run(['dpkg', '--purge', ...names], { timeout: 300_000, env: { DEBIAN_FRONTEND: 'noninteractive' } })
+      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'dpkg --purge failed.') }
+    },
+  },
+  {
+    id: 'big-logs',
+    title: 'Oversized log files',
+    description:
+      'Empties logs in /var/log that have grown past 100 MB. The programs keep writing to them, but what they logged so far is gone.',
+    recommended: false,
+    kind: 'disk',
+    measure: async () => ({ bytes: sum(bigLogs()) }),
+    clean: async () => {
+      for (const file of bigLogs()) {
+        try {
+          truncateSync(file.path, 0)
+        } catch {
+          // Removed or rotated in the meantime.
+        }
+      }
+      return { ok: true }
+    },
+  },
+  {
+    id: 'tool-cache',
+    title: 'Developer tool caches',
+    description:
+      'Downloads kept by npm, Bun, pip, Yarn, pnpm, Composer, Go, Cargo and Gradle. The next install or build fetches what it needs again.',
+    recommended: false,
+    kind: 'disk',
+    measure: async () => ({ bytes: await contentSize(toolCaches()) }),
+    clean: async () => {
+      emptyDirs(toolCaches())
+      return { ok: true }
     },
   },
   {
@@ -347,4 +501,31 @@ export async function runCleanup(ids: string[]) {
   } finally {
     running = false
   }
+}
+
+const WEEK = 7 * DAY
+
+export function cleanupSchedule() {
+  const enabled = getSetting('auto_clean') === '1'
+  const last = Number(getSetting('auto_clean_at')) || null
+  return { enabled, lastRun: Number(getSetting('auto_clean_ran')) || null, nextRun: enabled && last ? last + WEEK : null }
+}
+
+export function setCleanupSchedule(enabled: boolean) {
+  setSetting('auto_clean', enabled ? '1' : '0')
+  // The first automatic run comes a week after switching it on.
+  if (enabled) setSetting('auto_clean_at', String(Date.now()))
+}
+
+async function scheduled() {
+  const { enabled, nextRun } = cleanupSchedule()
+  if (!enabled || !nextRun || Date.now() < nextRun) return
+  setSetting('auto_clean_at', String(Date.now()))
+  setSetting('auto_clean_ran', String(Date.now()))
+  await runCleanup(tasks.filter((task) => task.recommended).map((task) => task.id))
+}
+
+/** Once a week, cleans the items that are always safe to remove. */
+export function startScheduledCleanup() {
+  setInterval(() => void scheduled(), 3_600_000)
 }

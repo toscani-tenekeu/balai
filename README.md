@@ -11,12 +11,17 @@ it, and frees disk space, without agents, accounts or outside services.
 - **Health checks**: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock.
 - **Processes**: see what uses CPU and memory, and stop or force stop a process.
 - **Services**: start, stop, restart, enable or disable systemd services and read their recent logs.
-- **Cleanup**: apt cache, unused packages and old kernels, the systemd journal, rotated logs, old temporary files, crash reports, trash, Docker leftovers, user caches and the memory page cache. Each item shows how much it would free before you run it.
-- **Disk**: every filesystem, and a folder browser that shows where the space goes.
-- **Packages**: available updates, with security updates marked.
-- **Ports**: which programs are listening, and whether they are reachable from outside.
+- **Cleanup**: apt cache, unused packages and old kernels, the systemd journal, rotated and oversized logs, old temporary files, crash reports and core dumps, old snap revisions, trash, Docker leftovers, stopped containers and unused images, settings of removed packages, developer tool caches, user caches and the memory page cache. Each item shows how much it would free before you run it, and the safe ones can be cleaned every week on their own.
+- **Disk**: every filesystem, and a folder browser that shows where the space goes and lets you delete what you no longer need.
+- **Files**: find files by extension, size or age anywhere on the server, such as every `.zip` or everything over 1 GB, and delete the ones you pick.
+- **Packages**: available updates, with security updates marked. Install one update or all of them, and uninstall packages you no longer use.
+- **Ports**: which programs are listening, and whether they are reachable from outside. Stop or restart the program or service behind a port.
 - **Activity**: a record of everything done from the panel.
 - **Updates**: Balai checks for new versions and installs them from the interface, on request or automatically.
+
+Every action that changes the server asks for confirmation first and says what
+it will do. Files and packages the operating system needs are shown but cannot
+be removed from the panel.
 
 ## Requirements
 
@@ -73,6 +78,7 @@ server {
         proxy_pass http://127.0.0.1:7070;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
     }
 }
 ```

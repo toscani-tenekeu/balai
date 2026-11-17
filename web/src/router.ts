@@ -8,6 +8,7 @@ export const pages = [
   { path: '/services', name: 'Services', component: () => import('@/pages/Services.vue') },
   { path: '/cleanup', name: 'Cleanup', component: () => import('@/pages/Cleanup.vue') },
   { path: '/disk', name: 'Disk', component: () => import('@/pages/Disk.vue') },
+  { path: '/files', name: 'Files', component: () => import('@/pages/Files.vue') },
   { path: '/packages', name: 'Packages', component: () => import('@/pages/Packages.vue') },
   { path: '/ports', name: 'Ports', component: () => import('@/pages/Ports.vue') },
   { path: '/activity', name: 'Activity', component: () => import('@/pages/Activity.vue') },

@@ -1,5 +1,6 @@
-import { realpathSync, statSync } from 'node:fs'
+import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { isKeptFolder, isSystemPath } from './files.ts'
 import { lines, run } from './sys.ts'
 
 export interface Entry {
@@ -7,6 +8,8 @@ export interface Entry {
   name: string
   size: number
   directory: boolean
+  /** Needed by the system, so the panel will not delete it. */
+  locked: boolean
 }
 
 const PSEUDO = ['/proc', '/sys', '/dev', '/run']
@@ -36,12 +39,21 @@ export async function usage(input: string): Promise<{ path: string; parent: stri
       continue
     }
     let directory = false
+    let link = false
     try {
       directory = statSync(entryPath).isDirectory()
+      link = lstatSync(entryPath).isSymbolicLink()
     } catch {
       // Removed while scanning; keep the size that was measured.
     }
-    entries.push({ path: entryPath, name: entryPath.slice(path === '/' ? 1 : path.length + 1), size, directory })
+    entries.push({
+      path: entryPath,
+      name: entryPath.slice(path === '/' ? 1 : path.length + 1),
+      size,
+      directory,
+      // A link to a folder is left alone: removing it would not free anything.
+      locked: directory ? link || isKeptFolder(entryPath) : isSystemPath(entryPath),
+    })
   }
 
   entries.sort((a, b) => b.size - a.size)

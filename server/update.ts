@@ -2,6 +2,7 @@ import { existsSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { root } from './config.ts'
 import { getSetting, logActivity, setSetting } from './db.ts'
+import { packageJobRunning } from './packages.ts'
 import { lines, readText, reason, run } from './sys.ts'
 
 interface Commit {
@@ -85,6 +86,7 @@ export async function checkForUpdate() {
 export async function applyUpdate(): Promise<{ ok: boolean; message: string }> {
   if (!managed) return { ok: false, message: 'This copy was not installed with git and cannot update itself.' }
   if (installing) return { ok: false, message: 'An update is already being installed.' }
+  if (packageJobRunning()) return { ok: false, message: 'A package operation is running. Try again when it has finished.' }
   installing = true
 
   const before = (await git(['rev-parse', 'HEAD'])).stdout.trim()

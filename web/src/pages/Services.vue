@@ -48,18 +48,25 @@ const visible = computed(() => {
   })
 })
 
+const REMOTE = /^(ssh|sshd|networking|systemd-networkd|NetworkManager)(@.*)?\.service$/
 const short = (name: string) => name.replace(/\.service$/, '')
 const canToggleBoot = (item: ServiceInfo) => ['enabled', 'disabled'].includes(item.enabled)
 
-const CONFIRM: Partial<Record<Action, { verb: string; text: string }>> = {
-  stop: { verb: 'Stop', text: 'The service stops now. Anything that depends on it stops working until it is started again.' },
+const CONFIRM: Record<Action, { verb: string; text: string; destructive?: boolean }> = {
+  start: { verb: 'Start', text: 'The service starts now and begins using memory, CPU and possibly a network port.' },
+  stop: {
+    verb: 'Stop',
+    text: 'The service stops now. Anything that depends on it stops working until it is started again.',
+    destructive: true,
+  },
   restart: { verb: 'Restart', text: 'The service goes down for a moment and comes back. Open connections are dropped.' },
+  enable: { verb: 'Enable', text: 'The service will start by itself every time the server boots.' },
   disable: { verb: 'Disable', text: 'The service will no longer start when the server boots. It keeps running for now.' },
+  reset: { verb: 'Clear', text: 'The failed mark is removed. The service stays stopped and its logs are kept.' },
 }
 
 function ask(service: ServiceInfo, action: Action) {
-  if (CONFIRM[action]) pending.value = { service, action }
-  else void act(service, action)
+  pending.value = { service, action }
 }
 
 async function act(service: ServiceInfo, action: Action) {
@@ -164,12 +171,22 @@ async function showLogs(service: ServiceInfo) {
   <AlertDialog :open="!!pending" @update:open="(open: boolean) => { if (!open) pending = null }">
     <AlertDialogContent v-if="pending">
       <AlertDialogHeader>
-        <AlertDialogTitle>{{ CONFIRM[pending.action]?.verb }} {{ short(pending.service.name) }}?</AlertDialogTitle>
-        <AlertDialogDescription>{{ CONFIRM[pending.action]?.text }}</AlertDialogDescription>
+        <AlertDialogTitle>{{ CONFIRM[pending.action].verb }} {{ short(pending.service.name) }}?</AlertDialogTitle>
+        <AlertDialogDescription>
+          {{ CONFIRM[pending.action].text }}
+          <template v-if="REMOTE.test(pending.service.name) && ['stop', 'disable'].includes(pending.action)">
+            This service gives you remote access: without it you may be locked out of the server.
+          </template>
+        </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction @click="act(pending.service, pending.action)">{{ CONFIRM[pending.action]?.verb }}</AlertDialogAction>
+        <AlertDialogAction
+          :variant="CONFIRM[pending.action].destructive ? 'destructive' : 'default'"
+          @click="act(pending.service, pending.action)"
+        >
+          {{ CONFIRM[pending.action].verb }}
+        </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

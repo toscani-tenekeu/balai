@@ -1,5 +1,5 @@
 import { logActivity } from './db.ts'
-import { lines, reason, run } from './sys.ts'
+import { lines, readText, reason, run } from './sys.ts'
 
 export interface ServiceInfo {
   name: string
@@ -59,10 +59,16 @@ const ACTIONS: Record<string, { past: string; args: string[] }> = {
   reset: { past: 'Cleared failed state', args: ['reset-failed'] },
 }
 
+/** The unit this panel runs under, if it was started by systemd. */
+const OWN_UNIT = readText('/proc/self/cgroup').match(/\/([^/\n]+\.service)$/m)?.[1] ?? null
+
 export async function serviceAction(name: string, action: string): Promise<{ ok: boolean; message: string }> {
   const spec = ACTIONS[action]
   if (!spec) return { ok: false, message: 'Unknown action.' }
   if (!NAME.test(name)) return { ok: false, message: 'Invalid service name.' }
+  if (name === OWN_UNIT && action === 'stop') {
+    return { ok: false, message: 'This is the panel itself. Stop it from a terminal instead.' }
+  }
 
   const result = await run(['systemctl', ...spec.args, '--', name], { timeout: 60_000 })
   const message = result.ok ? `${spec.past}: ${name}` : reason(result, 'systemctl failed.')

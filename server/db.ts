@@ -58,7 +58,7 @@ export function deleteSetting(key: string) {
 }
 
 export interface ActivityEntry {
-  area: 'cleanup' | 'process' | 'service' | 'packages' | 'account' | 'update'
+  area: 'cleanup' | 'process' | 'service' | 'packages' | 'files' | 'account' | 'update'
   action: string
   target?: string
   detail?: string

@@ -1,4 +1,4 @@
-import { lines, run } from './sys.ts'
+import { lines, readText, run } from './sys.ts'
 
 export interface Listener {
   protocol: string
@@ -6,7 +6,14 @@ export interface Listener {
   port: number
   process: string
   pid: number | null
+  /** systemd service the program belongs to, when there is one. */
+  unit: string | null
   public: boolean
+}
+
+function unitOf(pid: number): string | null {
+  const match = readText(`/proc/${pid}/cgroup`).match(/\/([^/\n]+\.service)(?:\/[^\n]*)?$/m)
+  return match ? match[1]! : null
 }
 
 export async function listListeners(): Promise<Listener[]> {
@@ -35,6 +42,7 @@ export async function listListeners(): Promise<Listener[]> {
       port,
       process: owner?.[1] ?? '',
       pid: owner ? Number(owner[2]) : null,
+      unit: owner ? unitOf(Number(owner[2])) : null,
       public: !(address.startsWith('127.') || address === '::1'),
     })
   }

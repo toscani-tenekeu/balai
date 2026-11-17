@@ -14,13 +14,23 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
+import { Switch } from '@/components/ui/switch'
 import { useResource } from '@/composables/useResource'
 import { messageOf, post } from '@/lib/api'
-import { bytes } from '@/lib/format'
-import type { CleanupItem, CleanupResult } from '@/lib/types'
+import { bytes, dateTime } from '@/lib/format'
+import type { CleanupItem, CleanupResult, CleanupSchedule } from '@/lib/types'
 
 const { data, error, loading, refresh } = useResource<CleanupItem[]>('/cleanup')
+const { data: schedule } = useResource<CleanupSchedule>('/cleanup/schedule')
 const selected = ref<Record<string, boolean>>({})
+
+async function setSchedule(enabled: boolean) {
+  try {
+    schedule.value = await post<CleanupSchedule>('/cleanup/schedule', { enabled })
+  } catch (failure) {
+    toast.error(messageOf(failure))
+  }
+}
 const confirming = ref(false)
 const running = ref(false)
 const result = ref<CleanupResult | null>(null)
@@ -116,6 +126,22 @@ async function run() {
         {{ running ? 'Cleaning…' : 'Clean selected' }}
       </Button>
     </CardFooter>
+  </Card>
+
+  <Card v-if="schedule">
+    <CardContent>
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldLabel for="auto-clean">Clean every week</FieldLabel>
+          <FieldDescription>
+            Once a week, Balai removes the items that are always safe to remove. The others are never cleaned on their own.
+            <template v-if="schedule.nextRun">Next run on {{ dateTime(schedule.nextRun) }}.</template>
+            <template v-if="schedule.lastRun">Last run on {{ dateTime(schedule.lastRun) }}.</template>
+          </FieldDescription>
+        </FieldContent>
+        <Switch id="auto-clean" :model-value="schedule.enabled" @update:model-value="setSchedule" />
+      </Field>
+    </CardContent>
   </Card>
 
   <AlertDialog v-model:open="confirming">

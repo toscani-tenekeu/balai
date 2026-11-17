@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { FileIcon, FolderIcon } from '@lucide/vue'
+import { FileIcon, FolderIcon, Trash2Icon } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
@@ -12,10 +17,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useResource } from '@/composables/useResource'
+import { messageOf, post } from '@/lib/api'
 import { bytes, percent } from '@/lib/format'
 import type { DiskUsage, Overview } from '@/lib/types'
 
-const { data: overview, error } = useResource<Overview>('/overview', 30_000)
+type Entry = DiskUsage['entries'][number]
+
+const { data: overview, error, refresh: refreshOverview } = useResource<Overview>('/overview', 30_000)
 
 const path = ref('/var')
 const { data: usage, error: usageError, loading, refresh } = useResource<DiskUsage>(
@@ -36,6 +44,30 @@ const crumbs = computed(() => {
   return parts.map((name, index) => ({ name, path: `/${parts.slice(0, index + 1).join('/')}` }))
 })
 const largest = computed(() => usage.value?.entries[0]?.size || 1)
+
+const pending = ref<Entry | null>(null)
+const deleting = ref('')
+
+async function remove() {
+  const entry = pending.value
+  if (!entry) return
+  pending.value = null
+  deleting.value = entry.path
+  try {
+    if (entry.directory) await post('/files/delete-folder', { path: entry.path })
+    else {
+      const result = await post<{ failed: { message: string }[] }>('/files/delete', { paths: [entry.path] })
+      if (result.failed.length) throw new Error(result.failed[0]!.message)
+    }
+    toast.success(`Deleted ${entry.name}, ${bytes(entry.size)} freed.`)
+  } catch (failure) {
+    toast.error(messageOf(failure))
+  }
+  deleting.value = ''
+  loading.value = true
+  void refresh()
+  void refreshOverview()
+}
 </script>
 
 <template>
@@ -63,7 +95,8 @@ const largest = computed(() => usage.value?.entries[0]?.size || 1)
   <Card>
     <CardHeader>
       <CardTitle>Where the space goes</CardTitle>
-      <CardDescription>Open a folder to see what takes room inside it. Large folders take a moment to measure.</CardDescription>
+      <CardDescription>Open a folder to see what takes room inside it. Large folders take a moment to measure.
+        Folders and files the system needs cannot be deleted from here.</CardDescription>
     </CardHeader>
     <CardContent class="flex flex-col gap-4">
       <div class="flex flex-wrap items-center gap-3">
@@ -103,6 +136,7 @@ const largest = computed(() => usage.value?.entries[0]?.size || 1)
             <TableHead>Name</TableHead>
             <TableHead class="w-1/3">Share</TableHead>
             <TableHead class="text-right">Size</TableHead>
+            <TableHead class="w-10"><span class="sr-only">Actions</span></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody :class="loading ? 'opacity-50' : ''">
@@ -119,8 +153,21 @@ const largest = computed(() => usage.value?.entries[0]?.size || 1)
             </TableCell>
             <TableCell><Progress :model-value="(entry.size / largest) * 100" /></TableCell>
             <TableCell class="text-right tabular-nums">{{ bytes(entry.size) }}</TableCell>
+            <TableCell>
+              <Spinner v-if="deleting === entry.path" class="mx-auto" />
+              <Button
+                v-else-if="!entry.locked"
+                variant="ghost"
+                size="icon-sm"
+                :disabled="!!deleting"
+                :aria-label="`Delete ${entry.name}`"
+                @click="pending = entry"
+              >
+                <Trash2Icon />
+              </Button>
+            </TableCell>
           </TableRow>
-          <TableEmpty v-if="!usage.entries.length" :colspan="3">This folder is empty.</TableEmpty>
+          <TableEmpty v-if="!usage.entries.length" :colspan="4">This folder is empty.</TableEmpty>
         </TableBody>
       </Table>
       <div v-else-if="!usageError" class="flex flex-col gap-2">
@@ -128,4 +175,24 @@ const largest = computed(() => usage.value?.entries[0]?.size || 1)
       </div>
     </CardContent>
   </Card>
+
+  <AlertDialog :open="!!pending" @update:open="(open: boolean) => { if (!open) pending = null }">
+    <AlertDialogContent v-if="pending">
+      <AlertDialogHeader>
+        <AlertDialogTitle>Delete {{ pending.name }}?</AlertDialogTitle>
+        <AlertDialogDescription>
+          <template v-if="pending.directory">
+            The folder and everything inside it, {{ bytes(pending.size) }} in all, is removed for good.
+          </template>
+          <template v-else>The file ({{ bytes(pending.size) }}) is removed for good.</template>
+          There is no trash to restore it from, and a program that needs it will stop working.
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <p class="bg-muted rounded-md border p-3 font-mono text-xs break-all">{{ pending.path }}</p>
+      <AlertDialogFooter>
+        <AlertDialogCancel>Cancel</AlertDialogCancel>
+        <AlertDialogAction variant="destructive" @click="remove">Delete</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
 </template>

@@ -1,9 +1,10 @@
+import { readdirSync, readlinkSync, statSync } from 'node:fs'
 import os from 'node:os'
 import { filesystems, memory } from './metrics.ts'
 import { packageState } from './packages.ts'
 import { listProcesses } from './processes.ts'
 import { failedUnits } from './services.ts'
-import { has, lines, run } from './sys.ts'
+import { has, lines, readText, run } from './sys.ts'
 
 export type Status = 'ok' | 'warning' | 'critical'
 
@@ -155,6 +156,52 @@ async function clockCheck(): Promise<Check | null> {
   }
 }
 
+/** Space that a deleted file keeps using until the program holding it open is restarted. */
+function heldSpaceCheck(): Check | null {
+  const seen = new Set<string>()
+  const perProgram = new Map<string, number>()
+  let total = 0
+  let pids: string[]
+  try {
+    pids = readdirSync('/proc').filter((name) => /^\d+$/.test(name))
+  } catch {
+    return null
+  }
+  for (const pid of pids) {
+    let fds: string[]
+    try {
+      fds = readdirSync(`/proc/${pid}/fd`)
+    } catch {
+      continue
+    }
+    for (const fd of fds) {
+      try {
+        const target = readlinkSync(`/proc/${pid}/fd/${fd}`)
+        if (!target.endsWith(' (deleted)') || !target.startsWith('/') || /^\/(dev|run|memfd|SYSV)/.test(target)) continue
+        const stat = statSync(`/proc/${pid}/fd/${fd}`)
+        const key = `${stat.dev}:${stat.ino}`
+        if (!stat.isFile() || stat.nlink > 0 || seen.has(key)) continue
+        seen.add(key)
+        const size = stat.blocks * 512
+        total += size
+        const name = readText(`/proc/${pid}/comm`).trim() || pid
+        perProgram.set(name, (perProgram.get(name) ?? 0) + size)
+      } catch {
+        // The descriptor was closed in the meantime.
+      }
+    }
+  }
+  if (total < 200 * 1024 ** 2) return null
+  const [program] = [...perProgram.entries()].sort((a, b) => b[1] - a[1])[0]!
+  return {
+    id: 'held-space',
+    title: 'Space held by deleted files',
+    status: total >= 2 * 1024 ** 3 ? 'critical' : 'warning',
+    detail: `${gib(total)} belongs to files that were deleted while still open, mostly by ${program}. Restarting that program frees it.`,
+    link: '/services',
+  }
+}
+
 const ORDER: Record<Status, number> = { critical: 0, warning: 1, ok: 2 }
 
 export async function health() {
@@ -167,6 +214,7 @@ export async function health() {
     updateChecks(),
     oomCheck(),
     clockCheck(),
+    heldSpaceCheck(),
   ])
   const checks = groups.flat().filter((check): check is Check => check !== null)
   checks.sort((a, b) => ORDER[a.status] - ORDER[b.status])

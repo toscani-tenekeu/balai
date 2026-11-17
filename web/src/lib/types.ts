@@ -85,7 +85,7 @@ export interface DiskUsage {
   path: string
   parent: string | null
   total: number
-  entries: { path: string; name: string; size: number; directory: boolean }[]
+  entries: { path: string; name: string; size: number; directory: boolean; locked: boolean }[]
 }
 
 export interface PackageState {
@@ -102,6 +102,7 @@ export interface Listener {
   port: number
   process: string
   pid: number | null
+  unit: string | null
   public: boolean
 }
 
@@ -132,4 +133,62 @@ export interface UpdateState {
 export interface ActionResult {
   ok: boolean
   message: string
+}
+
+export interface InstalledPackage {
+  name: string
+  version: string
+  size: number
+  summary: string
+  manual: boolean
+  locked: boolean
+}
+
+export interface RemovalPlan {
+  ok: boolean
+  name: string
+  removed: string[]
+  size: number
+  blocked: string[]
+  warnings: string[]
+}
+
+export interface PackageJob {
+  id: number
+  title: string
+  running: boolean
+  ok: boolean | null
+  output: string[]
+  startedAt: number
+  finishedAt: number | null
+}
+
+export interface FoundFile {
+  path: string
+  size: number
+  modified: number
+  locked: boolean
+}
+
+export interface FileSearch {
+  ok: boolean
+  path: string
+  extensions: string[]
+  count: number
+  total: number
+  truncated: boolean
+  files: FoundFile[]
+}
+
+export interface DeleteResult {
+  ok: boolean
+  deleted: number
+  freed: number
+  failed: { path: string; message: string }[]
+}
+
+export interface CleanupSchedule {
+  enabled: boolean
+  lastRun: number | null
+  nextRun: number | null
 }

@@ -5,13 +5,16 @@ import {
   allowAttempt, checkPassword, checkSetupToken, createSession, endSession, ensureAdmin,
   finishSetup, isAuthed, sessionCookie, setPassword, setupFile, setupPending,
 } from './auth.ts'
-import { listCleanup, runCleanup } from './cleanup.ts'
+import { cleanupSchedule, listCleanup, runCleanup, setCleanupSchedule, startScheduledCleanup } from './cleanup.ts'
 import { config } from './config.ts'
 import { db, logActivity } from './db.ts'
 import { usage } from './disk.ts'
+import { deleteFiles, deleteFolder, searchFiles } from './files.ts'
 import { health } from './health.ts'
 import { history, overview, startSampling } from './metrics.ts'
-import { packageState, refreshIndex } from './packages.ts'
+import {
+  installedPackages, packageJob, packageState, refreshIndex, removalPlan, removePackage, upgradePackages,
+} from './packages.ts'
 import { listListeners } from './ports.ts'
 import { listProcesses, signalProcess } from './processes.ts'
 import { listServices, serviceAction, serviceLogs } from './services.ts'
@@ -39,7 +42,7 @@ const fail = (message: string, status = 400) => json({ ok: false, message }, sta
 async function body(req: Request): Promise<Record<string, unknown>> {
   try {
     const text = await req.text()
-    if (text.length > 100_000) return {}
+    if (text.length > 2_000_000) return {}
     const parsed: unknown = JSON.parse(text || '{}')
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
   } catch {
@@ -164,6 +167,55 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
     return json(result, result.ok ? 200 : 502)
   }
 
+  if (route === 'GET /packages/installed') return json(await installedPackages())
+  if (route === 'GET /packages/job') return json({ job: packageJob() })
+
+  if (route === 'GET /packages/removal') {
+    const plan = await removalPlan(url.searchParams.get('name') ?? '')
+    return json(plan, plan.ok ? 200 : 400)
+  }
+
+  if (route === 'POST /packages/upgrade') {
+    const data = await body(req)
+    const result = await upgradePackages(typeof data.name === 'string' ? data.name : null)
+    return json(result, result.ok ? 200 : 409)
+  }
+
+  if (route === 'POST /packages/remove') {
+    const data = await body(req)
+    if (typeof data.name !== 'string') return fail('Invalid package name.')
+    const result = await removePackage(data.name, data.purge === true)
+    return json(result, result.ok ? 200 : 409)
+  }
+
+  if (route === 'GET /files') {
+    const query = url.searchParams
+    const result = await searchFiles({
+      path: query.get('path') ?? '/',
+      extensions: (query.get('ext') ?? '').split(/[\s,;]+/),
+      minBytes: Number(query.get('min')) || 0,
+      olderThanDays: Number(query.get('days')) || 0,
+    })
+    return json(result, result.ok ? 200 : 400)
+  }
+
+  if (route === 'POST /files/delete') {
+    const data = await body(req)
+    if (!Array.isArray(data.paths) || !data.paths.length) return fail('Nothing selected.')
+    return json(deleteFiles(data.paths))
+  }
+
+  if (route === 'POST /files/delete-folder') {
+    const result = await deleteFolder((await body(req)).path)
+    return json(result, result.ok ? 200 : 400)
+  }
+
+  if (route === 'GET /cleanup/schedule') return json(cleanupSchedule())
+  if (route === 'POST /cleanup/schedule') {
+    setCleanupSchedule((await body(req)).enabled === true)
+    return json(cleanupSchedule())
+  }
+
   if (route === 'GET /update') return json(updateState())
   if (route === 'POST /update/check') return json(await checkForUpdate())
   if (route === 'POST /update/apply') {
@@ -205,10 +257,13 @@ if (!existsSync(join(config.webDir, 'index.html'))) {
 }
 
 startSampling()
+startScheduledCleanup()
 
 const server = Bun.serve({
   hostname: config.host,
   port: config.port,
+  // Measuring a large folder or searching the whole disk can take a while.
+  idleTimeout: 240,
   async fetch(req, srv) {
     const url = new URL(req.url)
     try {
