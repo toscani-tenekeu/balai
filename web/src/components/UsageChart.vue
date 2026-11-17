@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ChartConfig } from '@/components/ui/chart'
+import { CurveType } from '@unovis/ts'
 import { VisAxis, VisLine, VisXYContainer } from '@unovis/vue'
 import { computed } from 'vue'
 import {
@@ -31,6 +32,7 @@ const tooltip = componentToString(config, ChartTooltipContent, {
         :x="(d: Sample) => d.at"
         :y="[(d: Sample) => d.cpu, (d: Sample) => d.mem]"
         :color="[config.cpu.color, config.mem.color]"
+        :curve-type="CurveType.Linear"
         :line-width="1.5"
       />
       <VisAxis type="x" :num-ticks="6" :tick-line="false" :domain-line="false" :grid-line="false" :tick-format="tick" />
