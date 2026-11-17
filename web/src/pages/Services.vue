@@ -1,19 +1,17 @@
 <script setup lang="ts">
-import { EllipsisIcon, SearchIcon } from '@lucide/vue'
+import { EraserIcon, PlayIcon, PowerIcon, PowerOffIcon, RotateCwIcon, ScrollTextIcon, SearchIcon, SquareIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
+import RowAction from '@/components/RowAction.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -120,7 +118,7 @@ async function showLogs(service: ServiceInfo) {
             <TableHead class="pl-4">Service</TableHead>
             <TableHead>State</TableHead>
             <TableHead>At boot</TableHead>
-            <TableHead class="w-10 pr-4"><span class="sr-only">Actions</span></TableHead>
+            <TableHead class="w-36 pr-4 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -137,26 +135,19 @@ async function showLogs(service: ServiceInfo) {
             <TableCell class="text-muted-foreground">{{ item.enabled }}</TableCell>
             <TableCell class="pr-4">
               <Spinner v-if="busy === item.name" class="mx-auto" />
-              <DropdownMenu v-else>
-                <DropdownMenuTrigger as-child>
-                  <Button variant="ghost" size="icon-sm" :aria-label="`Actions for ${short(item.name)}`">
-                    <EllipsisIcon />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem @select="showLogs(item)">View logs</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem v-if="item.active !== 'active'" @select="ask(item, 'start')">Start</DropdownMenuItem>
-                  <DropdownMenuItem v-if="item.active === 'active'" @select="ask(item, 'restart')">Restart</DropdownMenuItem>
-                  <DropdownMenuItem v-if="item.active === 'active'" @select="ask(item, 'stop')">Stop</DropdownMenuItem>
-                  <DropdownMenuItem v-if="item.active === 'failed'" @select="ask(item, 'reset')">Clear failed state</DropdownMenuItem>
-                  <template v-if="canToggleBoot(item)">
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem v-if="item.enabled === 'disabled'" @select="ask(item, 'enable')">Enable at boot</DropdownMenuItem>
-                    <DropdownMenuItem v-else @select="ask(item, 'disable')">Disable at boot</DropdownMenuItem>
-                  </template>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <div v-else class="flex justify-end gap-0.5">
+                <RowAction :label="`Logs of ${short(item.name)}`" @click="showLogs(item)"><ScrollTextIcon /></RowAction>
+                <RowAction v-if="item.active !== 'active'" :label="`Start ${short(item.name)}`" @click="ask(item, 'start')"><PlayIcon /></RowAction>
+                <template v-else>
+                  <RowAction :label="`Restart ${short(item.name)}`" @click="ask(item, 'restart')"><RotateCwIcon /></RowAction>
+                  <RowAction :label="`Stop ${short(item.name)}`" destructive @click="ask(item, 'stop')"><SquareIcon /></RowAction>
+                </template>
+                <RowAction v-if="item.active === 'failed'" label="Clear failed state" @click="ask(item, 'reset')"><EraserIcon /></RowAction>
+                <template v-if="canToggleBoot(item)">
+                  <RowAction v-if="item.enabled === 'disabled'" label="Enable at boot" @click="ask(item, 'enable')"><PowerIcon /></RowAction>
+                  <RowAction v-else label="Disable at boot" @click="ask(item, 'disable')"><PowerOffIcon /></RowAction>
+                </template>
+              </div>
             </TableCell>
           </TableRow>
           <TableEmpty v-if="!visible.length" :colspan="4">No service matches.</TableEmpty>
@@ -181,12 +172,12 @@ async function showLogs(service: ServiceInfo) {
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction
+        <Button
           :variant="CONFIRM[pending.action].destructive ? 'destructive' : 'default'"
           @click="act(pending.service, pending.action)"
         >
           {{ CONFIRM[pending.action].verb }}
-        </AlertDialogAction>
+        </Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
