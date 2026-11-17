@@ -6,7 +6,7 @@ import LoadError from '@/components/LoadError.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
@@ -296,7 +296,7 @@ onBeforeUnmount(() => clearInterval(timer))
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction @click="confirm">{{ upgrade.name ? 'Update' : 'Install all' }}</AlertDialogAction>
+        <Button @click="confirm">{{ upgrade.name ? 'Update' : 'Install all' }}</Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
@@ -343,9 +343,9 @@ onBeforeUnmount(() => clearInterval(timer))
 
       <AlertDialogFooter>
         <AlertDialogCancel>{{ blocked || removal.error ? 'Close' : 'Cancel' }}</AlertDialogCancel>
-        <AlertDialogAction v-if="removal.plan && !blocked" variant="destructive" @click="confirm">
+        <Button v-if="removal.plan && !blocked" variant="destructive" @click="confirm">
           Uninstall
-        </AlertDialogAction>
+        </Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

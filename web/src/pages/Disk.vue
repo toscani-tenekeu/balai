@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import {
@@ -191,7 +191,7 @@ async function remove() {
       <p class="bg-muted rounded-md border p-3 font-mono text-xs break-all">{{ pending.path }}</p>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction variant="destructive" @click="remove">Delete</AlertDialogAction>
+        <Button variant="destructive" @click="remove">Delete</Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

@@ -1,17 +1,15 @@
 <script setup lang="ts">
-import { EllipsisIcon, SearchIcon } from '@lucide/vue'
+import { SearchIcon, SquareIcon, ZapIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
+import RowAction from '@/components/RowAction.vue'
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -80,7 +78,7 @@ async function confirm() {
             <TableHead class="text-right">CPU</TableHead>
             <TableHead class="text-right">Memory</TableHead>
             <TableHead class="text-right">Running</TableHead>
-            <TableHead class="w-10 pr-4"><span class="sr-only">Actions</span></TableHead>
+            <TableHead class="w-20 pr-4 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -95,19 +93,10 @@ async function confirm() {
             <TableCell class="text-right tabular-nums">{{ bytes(item.rss) }}</TableCell>
             <TableCell class="text-right tabular-nums">{{ duration(item.elapsed) }}</TableCell>
             <TableCell class="pr-4">
-              <DropdownMenu>
-                <DropdownMenuTrigger as-child>
-                  <Button variant="ghost" size="icon-sm" :aria-label="`Actions for ${item.name}`">
-                    <EllipsisIcon />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem @select="pending = { process: item, action: 'stop' }">Stop</DropdownMenuItem>
-                  <DropdownMenuItem variant="destructive" @select="pending = { process: item, action: 'kill' }">
-                    Force stop
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <div class="flex justify-end gap-0.5">
+                <RowAction :label="`Stop ${item.name}`" @click="pending = { process: item, action: 'stop' }"><SquareIcon /></RowAction>
+                <RowAction :label="`Force stop ${item.name}`" destructive @click="pending = { process: item, action: 'kill' }"><ZapIcon /></RowAction>
+              </div>
             </TableCell>
           </TableRow>
           <TableEmpty v-if="!visible.length" :colspan="7">No process matches that filter.</TableEmpty>
@@ -136,9 +125,9 @@ async function confirm() {
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction :variant="pending.action === 'kill' ? 'destructive' : 'default'" @click="confirm">
+        <Button :variant="pending.action === 'kill' ? 'destructive' : 'default'" @click="confirm">
           {{ pending.action === 'kill' ? 'Force stop' : 'Stop' }}
-        </AlertDialogAction>
+        </Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

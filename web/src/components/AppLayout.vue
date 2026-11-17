@@ -1,10 +1,7 @@
 <script setup lang="ts">
 import { useColorMode } from '@vueuse/core'
-import {
-  BrushCleaningIcon, CpuIcon, FileSearchIcon, HardDriveIcon, HistoryIcon, LayoutDashboardIcon, LogOutIcon,
-  MoonIcon, NetworkIcon, PackageIcon, ServerCogIcon, SettingsIcon, SunIcon, Trash2Icon,
-} from '@lucide/vue'
-import { onMounted } from 'vue'
+import { BrushCleaningIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from '@lucide/vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -13,24 +10,20 @@ import {
   SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem,
   SidebarProvider, SidebarRail, SidebarTrigger,
 } from '@/components/ui/sidebar'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { loadUpdateState, signedIn, updateAvailable } from '@/composables/useSession'
+import { sectionOf, sections } from '@/lib/sections'
 import { post } from '@/lib/api'
 
 const route = useRoute()
 const router = useRouter()
 const mode = useColorMode()
 
-const links = [
-  { to: '/', label: 'Overview', icon: LayoutDashboardIcon },
-  { to: '/processes', label: 'Processes', icon: CpuIcon },
-  { to: '/services', label: 'Services', icon: ServerCogIcon },
-  { to: '/cleanup', label: 'Cleanup', icon: Trash2Icon },
-  { to: '/disk', label: 'Disk', icon: HardDriveIcon },
-  { to: '/files', label: 'Files', icon: FileSearchIcon },
-  { to: '/packages', label: 'Packages', icon: PackageIcon },
-  { to: '/ports', label: 'Ports', icon: NetworkIcon },
-  { to: '/activity', label: 'Activity', icon: HistoryIcon },
-]
+// The open section's pages are tabs under the header, so related tools are one click apart.
+const section = computed(() => sectionOf(route.path))
+const goTo = (path: string | number) => {
+  if (path !== route.path) void router.push(String(path))
+}
 
 async function signOut() {
   await post('/logout').catch(() => null)
@@ -66,11 +59,11 @@ onMounted(loadUpdateState)
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem v-for="link in links" :key="link.to">
-                <SidebarMenuButton as-child :is-active="route.path === link.to" :tooltip="link.label">
-                  <RouterLink :to="link.to">
-                    <component :is="link.icon" />
-                    <span>{{ link.label }}</span>
+              <SidebarMenuItem v-for="item in sections" :key="item.id">
+                <SidebarMenuButton as-child :is-active="section?.id === item.id" :tooltip="item.label">
+                  <RouterLink :to="item.tabs[0]!.to">
+                    <component :is="item.icon" />
+                    <span>{{ item.label }}</span>
                   </RouterLink>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -105,7 +98,7 @@ onMounted(loadUpdateState)
       <header class="flex h-14 shrink-0 items-center gap-2 border-b px-4">
         <SidebarTrigger class="-ml-1" />
         <Separator orientation="vertical" class="mr-2 h-4! self-center!" />
-        <h1 class="text-sm font-medium">{{ route.name }}</h1>
+        <h1 class="text-sm font-medium">{{ section?.label ?? route.name }}</h1>
         <Button
           variant="ghost"
           size="icon"
@@ -118,6 +111,14 @@ onMounted(loadUpdateState)
         </Button>
       </header>
       <main class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 p-4 md:p-6">
+        <Tabs v-if="section && section.tabs.length > 1" :model-value="route.path" @update:model-value="goTo">
+          <TabsList class="max-w-full overflow-x-auto">
+            <TabsTrigger v-for="tab in section.tabs" :key="tab.to" :value="tab.to" class="px-3">
+              <component :is="tab.icon" />
+              {{ tab.label }}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
         <RouterView />
       </main>
     </SidebarInset>

@@ -1,18 +1,16 @@
 <script setup lang="ts">
-import { EllipsisIcon } from '@lucide/vue'
+import { RotateCwIcon, SquareIcon, ZapIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
+import RowAction from '@/components/RowAction.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useResource } from '@/composables/useResource'
@@ -108,7 +106,7 @@ async function confirm() {
             <TableHead>Address</TableHead>
             <TableHead>Program</TableHead>
             <TableHead>Exposure</TableHead>
-            <TableHead class="w-10"><span class="sr-only">Actions</span></TableHead>
+            <TableHead class="w-28 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -125,28 +123,14 @@ async function confirm() {
               <StatusBadge :tone="item.public ? 'good' : 'idle'">{{ item.public ? 'Reachable' : 'Local only' }}</StatusBadge>
             </TableCell>
             <TableCell>
-              <DropdownMenu v-if="item.pid">
-                <DropdownMenuTrigger as-child>
-                  <Button variant="ghost" size="icon-sm" :aria-label="`Actions for port ${item.port}`">
-                    <EllipsisIcon />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <template v-if="item.unit">
-                    <DropdownMenuItem @select="pending = { listener: item, action: 'restart-service' }">
-                      Restart service
-                    </DropdownMenuItem>
-                    <DropdownMenuItem @select="pending = { listener: item, action: 'stop-service' }">
-                      Stop service
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </template>
-                  <DropdownMenuItem @select="pending = { listener: item, action: 'stop' }">Stop program</DropdownMenuItem>
-                  <DropdownMenuItem variant="destructive" @select="pending = { listener: item, action: 'kill' }">
-                    Force stop program
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <div v-if="item.pid" class="flex justify-end gap-0.5">
+                <template v-if="item.unit">
+                  <RowAction :label="`Restart the ${unitName(item)} service`" @click="pending = { listener: item, action: 'restart-service' }"><RotateCwIcon /></RowAction>
+                  <RowAction :label="`Stop the ${unitName(item)} service`" @click="pending = { listener: item, action: 'stop-service' }"><SquareIcon /></RowAction>
+                </template>
+                <RowAction v-else :label="`Stop ${item.process || 'the program'}`" @click="pending = { listener: item, action: 'stop' }"><SquareIcon /></RowAction>
+                <RowAction :label="`Force stop ${item.process || 'the program'}`" destructive @click="pending = { listener: item, action: 'kill' }"><ZapIcon /></RowAction>
+              </div>
             </TableCell>
           </TableRow>
           <TableEmpty v-if="!data.length" :colspan="6">Nothing is listening.</TableEmpty>
@@ -171,9 +155,9 @@ async function confirm() {
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction :variant="dialog.destructive ? 'destructive' : 'default'" @click="confirm">
+        <Button :variant="dialog.destructive ? 'destructive' : 'default'" @click="confirm">
           {{ dialog.verb }}
-        </AlertDialogAction>
+        </Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
