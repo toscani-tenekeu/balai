@@ -1,14 +1,8 @@
-import { existsSync } from 'node:fs'
-import os from 'node:os'
 import { logActivity } from './db.ts'
-import { lines, readText, reason, run } from './sys.ts'
+import { backend, type InstalledPackage, type Upgrade } from './pm.ts'
+import { reason } from './sys.ts'
 
-export interface Upgrade {
-  name: string
-  current: string
-  next: string
-  security: boolean
-}
+export type { InstalledPackage, Upgrade } from './pm.ts'
 
 export interface PackageState {
   upgrades: Upgrade[]
@@ -16,111 +10,59 @@ export interface PackageState {
   rebootPackages: string[]
   indexAge: number | null
   checkedAt: number
+  /** The package manager in use, or null when this system's is not supported. */
+  manager: string | null
+  canUpgradeOne: boolean
+  canPurge: boolean
+  tracksSecurity: boolean
 }
 
 let cache: PackageState | null = null
 
-async function indexAge(): Promise<number | null> {
-  for (const path of ['/var/lib/apt/periodic/update-success-stamp', '/var/cache/apt/pkgcache.bin']) {
-    const file = Bun.file(path)
-    if (await file.exists()) return Math.round((Date.now() - file.lastModified) / 1000)
-  }
-  return null
-}
-
 export async function packageState(fresh = false): Promise<PackageState> {
   if (cache && !fresh && Date.now() - cache.checkedAt < 300_000) return cache
-
-  const result = await run(['apt', 'list', '--upgradable'], { timeout: 60_000 })
-  const upgrades: Upgrade[] = []
-  for (const line of lines(result.stdout)) {
-    const match = line.match(/^([^/\s]+)\/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from: ([^\]]+)\]/)
-    if (!match) continue
-    upgrades.push({
-      name: match[1]!,
-      next: match[3]!,
-      current: match[4]!,
-      security: match[2]!.includes('-security'),
-    })
+  if (!backend) {
+    return {
+      upgrades: [], rebootRequired: false, rebootPackages: [], indexAge: null, checkedAt: Date.now(),
+      manager: null, canUpgradeOne: false, canPurge: false, tracksSecurity: false,
+    }
   }
-
+  const [upgrades, reboot, indexAge] = await Promise.all([backend.upgrades(), backend.reboot(), backend.indexAge()])
   cache = {
     upgrades: upgrades.sort((a, b) => Number(b.security) - Number(a.security) || a.name.localeCompare(b.name)),
-    rebootRequired: existsSync('/var/run/reboot-required'),
-    rebootPackages: lines(readText('/var/run/reboot-required.pkgs')),
-    indexAge: await indexAge(),
+    rebootRequired: reboot.required,
+    rebootPackages: reboot.packages,
+    indexAge,
     checkedAt: Date.now(),
+    manager: backend.id,
+    canUpgradeOne: backend.canUpgradeOne,
+    canPurge: backend.canPurge,
+    tracksSecurity: backend.tracksSecurity,
   }
   return cache
 }
 
+const UNSUPPORTED = 'Balai does not know the package manager of this system.'
+
 export async function refreshIndex(): Promise<{ ok: boolean; message: string }> {
-  const result = await run(['apt-get', 'update', '-q'], {
-    timeout: 180_000,
-    env: { DEBIAN_FRONTEND: 'noninteractive' },
-  })
-  const message = result.ok ? 'Package lists are up to date.' : reason(result, 'apt-get update failed.')
+  if (!backend) return { ok: false, message: UNSUPPORTED }
+  const result = await backend.refresh()
+  const message = result.ok ? 'Package lists are up to date.' : reason(result, 'The package lists could not be refreshed.')
   logActivity({ area: 'packages', action: 'Refreshed package lists', detail: result.ok ? '' : message, ok: result.ok })
   cache = null
   return { ok: result.ok, message }
 }
 
-export interface InstalledPackage {
-  name: string
-  version: string
-  size: number
-  summary: string
-  /** Chosen by someone, as opposed to pulled in as a dependency. */
-  manual: boolean
-  /** Part of the base system; the panel will not remove it. */
-  locked: boolean
-}
-
-const PACKAGE = /^[a-z0-9][a-z0-9+.-]{1,99}(:[a-z0-9-]+)?$/
-const BASE_PRIORITIES = ['required', 'important']
-const KERNEL = os.release()
-
-function lockedName(name: string): boolean {
-  const base = name.split(':')[0]!
-  return base.includes(KERNEL) || /^(grub|shim|linux-image-(generic|virtual|amd64|arm64|cloud)$)/.test(base)
-}
+const PACKAGE = /^[A-Za-z0-9][A-Za-z0-9+._@-]{0,99}(:[a-z0-9-]+)?$/
 
 export async function installedPackages(): Promise<InstalledPackage[]> {
-  const [query, manual] = await Promise.all([
-    run([
-      'dpkg-query', '-W',
-      '-f=${binary:Package}\\t${Version}\\t${Installed-Size}\\t${db:Status-Abbrev}\\t${Essential}\\t${Priority}\\t${binary:Summary}\\n',
-    ], { timeout: 30_000 }),
-    run(['apt-mark', 'showmanual'], { timeout: 30_000 }),
-  ])
-  const chosen = new Set(lines(manual.stdout))
-  const list: InstalledPackage[] = []
-  for (const line of query.stdout.split('\n')) {
-    const [name, version, size, status, essential, priority, summary] = line.split('\t')
-    if (!name || !status?.startsWith('ii')) continue
-    list.push({
-      name,
-      version: version ?? '',
-      size: (Number(size) || 0) * 1024,
-      summary: summary ?? '',
-      manual: chosen.has(name) || chosen.has(name.split(':')[0]!),
-      locked: essential === 'yes' || BASE_PRIORITIES.includes(priority ?? '') || lockedName(name),
-    })
-  }
-  return list.sort((a, b) => a.name.localeCompare(b.name))
+  if (!backend) return []
+  return (await backend.installed()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
-const APT = [
-  'apt-get', '-y', '-q',
-  '-o', 'DPkg::Lock::Timeout=120',
-  '-o', 'Dpkg::Options::=--force-confdef',
-  '-o', 'Dpkg::Options::=--force-confold',
-]
-// Config files already on the server are kept, and no question is ever asked.
-const APT_ENV = { DEBIAN_FRONTEND: 'noninteractive', APT_LISTCHANGES_FRONTEND: 'none', NEEDRESTART_SUSPEND: '1' }
-
-/** What removing a package would take with it, worked out by apt without changing anything. */
+/** What removing a package would take with it, worked out by the package manager without changing anything. */
 export async function removalPlan(name: string) {
+  if (!backend) return { ok: false as const, message: UNSUPPORTED }
   if (!PACKAGE.test(name)) return { ok: false as const, message: 'Invalid package name.' }
   const installed = await installedPackages()
   // dpkg names some packages with their architecture (libc6:amd64) and apt does not, so both forms are indexed.
@@ -132,18 +74,16 @@ export async function removalPlan(name: string) {
     return { ok: true as const, name, removed: [name], size: target.size, blocked: [name], warnings: [] }
   }
 
-  const result = await run(['apt-get', '-s', 'remove', name], { timeout: 60_000 })
-  if (!result.ok) return { ok: false as const, message: reason(result, 'apt could not work out the removal.') }
+  const simulation = await backend.simulateRemove(name)
+  if (!simulation.ok) return { ok: false as const, message: simulation.message }
 
-  const removed = lines(result.stdout)
-    .map((line) => line.match(/^Remv (\S+)/)?.[1])
-    .filter((item): item is string => Boolean(item))
-  const blocked = removed.filter((item) => find(item)?.locked ?? lockedName(item))
+  const removed = simulation.removed.length ? simulation.removed : [name]
+  const blocked = removed.filter((item) => find(item)?.locked)
   const warnings: string[] = []
-  if (removed.some((item) => /^openssh-server|^ssh$/.test(item))) {
+  if (removed.some((item) => /^(openssh(-server)?|ssh|dropbear)$/.test(item))) {
     warnings.push('This removes the SSH server. You will no longer be able to connect to this server remotely.')
   }
-  if (removed.some((item) => /^(sudo|ufw|nftables|iptables|cron|systemd-timesyncd|netplan\.io|ifupdown|network-manager|cloud-init)$/.test(item))) {
+  if (removed.some((item) => /^(sudo|ufw|firewalld|nftables|iptables|cron|cronie|chrony|systemd-timesyncd|netplan\.io|ifupdown|network-manager|NetworkManager|cloud-init|wicked)$/.test(item))) {
     warnings.push('This removes a tool the system relies on for access, networking or scheduled tasks.')
   }
 
@@ -202,7 +142,7 @@ function start(title: string, cmd: string[], entry: { action: string; target?: s
         stdout: 'pipe',
         stderr: 'pipe',
         timeout: 1_800_000,
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...APT_ENV },
+        env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...backend?.env },
       })
       const [, , code] = await Promise.all([
         collect(proc.stdout, current.output),
@@ -230,9 +170,11 @@ function start(title: string, cmd: string[], entry: { action: string; target?: s
 }
 
 export async function upgradePackages(name: string | null) {
-  if (name === null) return start('Installing all updates', [...APT, 'upgrade'], { action: 'Installed all updates' })
+  if (!backend) return { ok: false, message: UNSUPPORTED }
+  if (name === null) return start('Installing all updates', backend.upgradeCommand(null), { action: 'Installed all updates' })
+  if (!backend.canUpgradeOne) return { ok: false, message: 'This system only supports installing all updates at once.' }
   if (!PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
-  return start(`Updating ${name}`, [...APT, 'install', '--only-upgrade', name], { action: 'Updated package', target: name })
+  return start(`Updating ${name}`, backend.upgradeCommand(name), { action: 'Updated package', target: name })
 }
 
 export async function removePackage(name: string, purge: boolean) {
@@ -241,8 +183,9 @@ export async function removePackage(name: string, purge: boolean) {
   if (plan.blocked.length) {
     return { ok: false, message: `The system needs ${plan.blocked.slice(0, 3).join(', ')}. Nothing was removed.` }
   }
-  return start(`Uninstalling ${name}`, [...APT, purge ? 'purge' : 'remove', name], {
-    action: purge ? 'Uninstalled package and its settings' : 'Uninstalled package',
+  const withSettings = purge && backend!.canPurge
+  return start(`Uninstalling ${name}`, backend!.removeCommand(name, withSettings), {
+    action: withSettings ? 'Uninstalled package and its settings' : 'Uninstalled package',
     target: name,
   })
 }

@@ -8,6 +8,12 @@ export interface RunResult {
 }
 
 /**
+ * The panel's environment without the variables OpenRC gives the service it runs: with RC_SVCNAME set,
+ * OpenRC's own tools act as if they were called from inside that service and, for one, hide it.
+ */
+const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^RC_/.test(key)))
+
+/**
  * Runs a program with an explicit argument list. Nothing goes through a shell,
  * so values taken from a request can never be interpreted as shell syntax.
  */
@@ -21,7 +27,7 @@ export async function run(
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: opts.timeout ?? 15_000,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...opts.env },
+      env: { ...baseEnv, LC_ALL: 'C', LANG: 'C', ...opts.env },
     })
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),

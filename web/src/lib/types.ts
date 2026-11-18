@@ -94,6 +94,11 @@ export interface PackageState {
   rebootPackages: string[]
   indexAge: number | null
   checkedAt: number
+  /** apt, dnf, yum, zypper, pacman or apk; null when this system's package manager is not supported. */
+  manager: string | null
+  canUpgradeOne: boolean
+  canPurge: boolean
+  tracksSecurity: boolean
 }
 
 export interface Listener {

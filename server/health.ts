@@ -104,6 +104,7 @@ async function zombieCheck(): Promise<Check> {
 
 async function updateChecks(): Promise<Check[]> {
   const state = await packageState()
+  if (!state.manager) return []
   const security = state.upgrades.filter((upgrade) => upgrade.security).length
   const total = state.upgrades.length
   return [
