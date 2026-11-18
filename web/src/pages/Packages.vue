@@ -152,6 +152,14 @@ onBeforeUnmount(() => clearInterval(timer))
       <TabsTrigger value="installed">Installed</TabsTrigger>
     </TabsList>
 
+    <Alert v-if="data && !data.manager">
+      <TriangleAlertIcon />
+      <AlertTitle>Packages are not available on this system</AlertTitle>
+      <AlertDescription>
+        Balai manages packages with apt, dnf, yum, zypper, pacman or apk, and none of them was found here.
+      </AlertDescription>
+    </Alert>
+
     <TabsContent value="updates">
       <Card>
         <CardHeader>
@@ -165,6 +173,7 @@ onBeforeUnmount(() => clearInterval(timer))
             <template v-if="data">
               <template v-if="security">{{ security }} for security. </template>
               <template v-if="data.indexAge !== null">Package lists refreshed {{ duration(data.indexAge) }} ago.</template>
+              <template v-if="data.manager && !data.canUpgradeOne">This system updates all packages together.</template>
             </template>
           </CardDescription>
           <CardAction class="flex gap-2">
@@ -191,7 +200,7 @@ onBeforeUnmount(() => clearInterval(timer))
                   <TableHead>Package</TableHead>
                   <TableHead>Installed</TableHead>
                   <TableHead>Available</TableHead>
-                  <TableHead>Type</TableHead>
+                  <TableHead v-if="data.tracksSecurity">Type</TableHead>
                   <TableHead class="w-20"><span class="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
@@ -200,11 +209,12 @@ onBeforeUnmount(() => clearInterval(timer))
                   <TableCell class="font-medium">{{ item.name }}</TableCell>
                   <TableCell class="text-muted-foreground max-w-48 truncate font-mono text-xs">{{ item.current }}</TableCell>
                   <TableCell class="max-w-48 truncate font-mono text-xs">{{ item.next }}</TableCell>
-                  <TableCell>
+                  <TableCell v-if="data.tracksSecurity">
                     <StatusBadge :tone="item.security ? 'bad' : 'idle'">{{ item.security ? 'Security' : 'Regular' }}</StatusBadge>
                   </TableCell>
                   <TableCell class="text-right">
                     <Button
+                      v-if="data.canUpgradeOne"
                       variant="outline"
                       size="sm"
                       :disabled="busy"
@@ -290,8 +300,9 @@ onBeforeUnmount(() => clearInterval(timer))
           {{ upgrade.name ? `Update ${upgrade.name}?` : `Install all ${data?.upgrades.length ?? ''} updates?` }}
         </AlertDialogTitle>
         <AlertDialogDescription>
-          Services that belong to an updated package restart during the installation, so they can be unavailable for a
-          moment. Your configuration files are kept as they are. A kernel update only takes effect after a server restart.
+          Depending on the system, services that belong to an updated package restart during the installation and can be
+          unavailable for a moment, or keep running the old version until they are restarted. Your configuration files are
+          kept as they are. A kernel update only takes effect after a server restart.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
@@ -326,13 +337,13 @@ onBeforeUnmount(() => clearInterval(timer))
         </Alert>
         <div v-if="others.length" class="flex flex-col gap-2">
           <p class="text-sm">
-            {{ others.length }} other {{ others.length === 1 ? 'package depends' : 'packages depend' }} on it and will be removed too:
+            {{ others.length }} other {{ others.length === 1 ? 'package goes' : 'packages go' }} with it, because they depend on it or were only installed for it:
           </p>
           <ul class="bg-muted max-h-32 overflow-y-auto rounded-md border p-3 font-mono text-xs">
             <li v-for="name in others" :key="name">{{ name }}</li>
           </ul>
         </div>
-        <Field orientation="horizontal">
+        <Field v-if="data?.canPurge" orientation="horizontal">
           <Checkbox id="purge" v-model="purge" />
           <FieldContent>
             <FieldLabel for="purge">Also delete its settings</FieldLabel>

@@ -46,7 +46,7 @@ const visible = computed(() => {
   })
 })
 
-const REMOTE = /^(ssh|sshd|networking|systemd-networkd|NetworkManager)(@.*)?\.service$/
+const REMOTE = /^(ssh|sshd|dropbear|networking|systemd-networkd|NetworkManager|wicked)(@.*)?(\.service)?$/
 const short = (name: string) => name.replace(/\.service$/, '')
 const canToggleBoot = (item: ServiceInfo) => ['enabled', 'disabled'].includes(item.enabled)
 
@@ -186,11 +186,11 @@ async function showLogs(service: ServiceInfo) {
     <DialogContent v-if="logs" class="sm:max-w-3xl">
       <DialogHeader>
         <DialogTitle>{{ short(logs.name) }}</DialogTitle>
-        <DialogDescription>The last 200 journal lines, newest at the bottom.</DialogDescription>
+        <DialogDescription>The last 200 log lines, newest at the bottom.</DialogDescription>
       </DialogHeader>
       <div v-if="!logs.lines" class="flex justify-center py-10"><Spinner /></div>
       <p v-else-if="!logs.lines.length" class="text-muted-foreground py-6 text-center text-sm">
-        This service has not written anything to the journal.
+        This service has not written anything to its log.
       </p>
       <ScrollArea v-else class="bg-muted h-96 rounded-md border">
         <pre class="p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">{{ logs.lines.join('\n') }}</pre>

@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readdirSync, rmSync, truncateSync, unlinkSync, w
 import { join } from 'node:path'
 import { getSetting, logActivity, setSetting } from './db.ts'
 import { memory } from './metrics.ts'
+import { backend } from './pm.ts'
 import { has, lines, reason, run } from './sys.ts'
 
 interface Measure {
@@ -119,7 +120,8 @@ const oldTemp = () => {
   return ['/tmp', '/var/tmp'].flatMap((dir) => findFiles(dir, (_, touched) => touched < limit))
 }
 
-const ROTATED = /\.(gz|xz|bz2|zst|old|\d+)$/
+// Rotated copies: syslog.1, auth.log.2.gz, and the dated ones of Red Hat and SUSE (messages-20261101).
+const ROTATED = /(\.(gz|xz|bz2|zst|old|\d+)|-\d{8}(\.\w+)?)$/
 const rotatedLogs = () =>
   findFiles('/var/log', (path) => !path.startsWith('/var/log/journal/') && ROTATED.test(path))
 
@@ -177,15 +179,6 @@ async function oldSnaps(): Promise<SnapRevision[]> {
     }))
 }
 
-async function leftoverConfigs(): Promise<string[]> {
-  const result = await run(['dpkg-query', '-W', '-f=${db:Status-Abbrev}\\t${binary:Package}\\n'], { timeout: 30_000 })
-  return result.stdout
-    .split('\n')
-    .filter((line) => line.startsWith('rc'))
-    .map((line) => line.split('\t')[1]!)
-    .filter(Boolean)
-}
-
 async function stoppedContainers(): Promise<string[]> {
   const result = await run(['docker', 'ps', '-a', '--filter', 'status=exited', '--filter', 'status=dead', '--format', '{{.ID}}'])
   return lines(result.stdout)
@@ -199,36 +192,46 @@ async function unusedImages(): Promise<number> {
 
 const count = (items: unknown[], word: string) => `${items.length} ${word}${items.length === 1 ? '' : 's'}`
 
-const apt = (args: string[], timeout = 300_000) =>
-  run(['apt-get', ...args], { timeout, env: { DEBIAN_FRONTEND: 'noninteractive' } })
+const pm = backend
+const pmEnv = pm?.env ?? {}
+const pmFailed = (result: { ok: boolean; stderr: string; stdout: string; code: number }, what: string) =>
+  ({ ok: result.ok, message: result.ok ? undefined : reason(result, `${what} failed.`) })
+
+/** Downloaded package files, wherever this system's package manager keeps them. */
+const cachedPackages = () => (pm ? pm.cache.roots.flatMap((root) => findFiles(root, (path) => pm.cache.match.test(path))) : [])
 
 const tasks: Task[] = [
   {
-    id: 'apt-cache',
+    id: 'package-cache',
     title: 'Package download cache',
-    description: 'Installer files apt has already used. They are downloaded again if ever needed.',
+    description: 'Installer files the package manager has already used. They are downloaded again if ever needed.',
     recommended: true,
     kind: 'disk',
-    measure: async () => ({ bytes: await contentSize(['/var/cache/apt/archives']) }),
+    available: () => pm !== null,
+    measure: async () => ({ bytes: sum(cachedPackages()) }),
     clean: async () => {
-      const result = await apt(['clean'])
-      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'apt-get clean failed.') }
+      if (pm?.cache.clean) {
+        const result = await run(pm.cache.clean, { timeout: 300_000, env: pmEnv })
+        if (!result.ok) return pmFailed(result, pm.cache.clean[0]!)
+      }
+      // Whatever the command left (or everything, where there is none) is removed directly.
+      removeFiles(cachedPackages())
+      return { ok: true }
     },
   },
   {
-    id: 'apt-autoremove',
+    id: 'unused-packages',
     title: 'Unused packages',
-    description: 'Packages that were installed as dependencies and that nothing needs any more, including old kernels.',
+    description: 'Packages that were installed as dependencies and that nothing needs any more, including old kernels where the system marks them so.',
     recommended: true,
     kind: 'disk',
-    measure: async () => {
-      const result = await apt(['-s', 'autoremove'], 60_000)
-      const count = lines(result.stdout).filter((line) => line.startsWith('Remv ')).length
-      return { bytes: null, note: count === 1 ? '1 package' : `${count} packages` }
-    },
+    available: () => pm?.autoremove != null,
+    measure: async () => ({ bytes: null, note: count(await pm!.autoremove!.list(), 'package') }),
     clean: async () => {
-      const result = await apt(['-y', 'autoremove', '--purge'])
-      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'apt-get autoremove failed.') }
+      const names = await pm!.autoremove!.list()
+      if (!names.length) return { ok: true }
+      const command = pm!.autoremove!.clean(names)
+      return pmFailed(await run(command, { timeout: 600_000, env: pmEnv }), command[0]!)
     },
   },
   {
@@ -247,7 +250,7 @@ const tasks: Task[] = [
   {
     id: 'rotated-logs',
     title: 'Rotated log files',
-    description: 'Archived copies in /var/log such as syslog.1 and auth.log.2.gz. Logs still being written are kept.',
+    description: 'Archived copies in /var/log such as syslog.1, messages-20260101 or auth.log.2.gz. Logs still being written are kept.',
     recommended: true,
     kind: 'disk',
     measure: async () => ({ bytes: sum(rotatedLogs()) }),
@@ -370,12 +373,13 @@ const tasks: Task[] = [
     description: 'Configuration files left behind by packages that were uninstalled. Reinstalling one starts from its defaults.',
     recommended: false,
     kind: 'disk',
-    measure: async () => ({ bytes: null, note: count(await leftoverConfigs(), 'package') }),
+    available: () => pm?.leftovers != null,
+    measure: async () => ({ bytes: null, note: count(await pm!.leftovers!.list(), 'package') }),
     clean: async () => {
-      const names = await leftoverConfigs()
+      const names = await pm!.leftovers!.list()
       if (!names.length) return { ok: true }
-      const result = await run(['dpkg', '--purge', ...names], { timeout: 300_000, env: { DEBIAN_FRONTEND: 'noninteractive' } })
-      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'dpkg --purge failed.') }
+      const command = pm!.leftovers!.clean(names)
+      return pmFailed(await run(command, { timeout: 300_000, env: pmEnv }), command[0]!)
     },
   },
   {

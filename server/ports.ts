@@ -6,13 +6,15 @@ export interface Listener {
   port: number
   process: string
   pid: number | null
-  /** systemd service the program belongs to, when there is one. */
+  /** Service the program belongs to (systemd unit or OpenRC service), when there is one. */
   unit: string | null
   public: boolean
 }
 
+/** The service a program belongs to: its systemd unit, or its OpenRC service (cgroup "openrc.<name>"). */
 function unitOf(pid: number): string | null {
-  const match = readText(`/proc/${pid}/cgroup`).match(/\/([^/\n]+\.service)(?:\/[^\n]*)?$/m)
+  const cgroup = readText(`/proc/${pid}/cgroup`)
+  const match = cgroup.match(/\/([^/\n]+\.service)(?:\/[^\n]*)?$/m) ?? cgroup.match(/\/openrc\.([^/\n]+)/m)
   return match ? match[1]! : null
 }
 

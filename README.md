@@ -6,12 +6,12 @@
 
 **Keep your server clean and healthy.**
 
-A small web panel for Debian and Ubuntu servers.<br>
+A small web panel for Linux servers.<br>
 See what is wrong, act on it and free disk space, without agents, accounts or outside services.
 
 [![Version](https://img.shields.io/github/package-json/v/toscani-tenekeu/balai?style=flat-square&color=171717)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Debian / Ubuntu](https://img.shields.io/badge/debian%20%7C%20ubuntu-systemd-A81D33?style=flat-square&logo=debian&logoColor=white)](#requirements)
+[![Linux](https://img.shields.io/badge/linux-14%20distributions-FCC624?style=flat-square&logo=linux&logoColor=black)](#requirements)
 [![Bun](https://img.shields.io/badge/built%20with-bun-000000?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
 [![Vue](https://img.shields.io/badge/vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white)](web)
 
@@ -30,8 +30,8 @@ Balai is organised in four sections, each with a few tabs.
 | Section | What you get |
 | --- | --- |
 | **Overview** | CPU, memory, swap and disk at a glance, a usage chart for the last hour, day or week, and health checks: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock. **Activity** keeps a record of everything done from the panel. |
-| **System** | **Processes**: what uses CPU and memory; stop or force stop. **Services**: start, stop, restart, enable or disable systemd services and read their logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
-| **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 1 GB. **Cleanup**: apt cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, developer caches and more, each showing what it frees, with an optional weekly run. |
+| **System** | **Processes**: what uses CPU and memory; stop or force stop. **Services**: start, stop, restart, enable or disable services (systemd, or OpenRC on Alpine) and read their logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
+| **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 1 GB. **Cleanup**: the package cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, developer caches and more, each showing what it frees, with an optional weekly run. |
 | **Packages** | Available updates with security updates marked. Install one or all of them, and uninstall packages you no longer use. |
 
 Actions sit right on each row, and every action that changes the server asks for
@@ -44,18 +44,29 @@ needs are shown but cannot be removed. Balai also updates itself from **Settings
 
 ## Requirements
 
-- Debian, Ubuntu or a derivative, with systemd
+- A 64-bit Linux server (x86-64 or ARM64) with Linux 5.1 or newer
 - Root access
+- About 1 GB of free memory while installing or updating, to build the interface
+- One of: Debian, Ubuntu, Linux Mint, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, Fedora, Oracle Linux, Amazon Linux 2023, openSUSE, Arch Linux, Manjaro or Alpine Linux
+
+Balai works with each system's own tools: apt, dnf or yum, zypper, pacman or apk
+for packages, and systemd or OpenRC for services. A few things depend on the
+system:
+
+- Updates are marked as security fixes on Debian, Ubuntu and the Red Hat family.
+- Arch and Manjaro install all updates together, as they require.
+- Uninstalling a package together with its settings is offered where the package manager can do it (apt, pacman, apk).
 
 ## Install
 
 ```bash
-git clone https://github.com/toscani-tenekeu/balai.git /opt/balai
-sudo bash /opt/balai/install.sh
+curl -fsSL https://raw.githubusercontent.com/toscani-tenekeu/balai/main/install.sh | sudo bash
 ```
 
-The script installs [Bun](https://bun.sh) if it is missing, builds the interface
-and starts Balai as a systemd service. When it finishes it prints two things:
+The script installs the few system tools Balai reads from and [Bun](https://bun.sh)
+with your distribution's package manager, downloads Balai to `/opt/balai`, builds
+the interface and starts it as a systemd service (OpenRC on Alpine). When it
+finishes it prints two things:
 
 ```
 Setup link:      http://203.0.113.10:7070/setup?token=…
@@ -86,7 +97,8 @@ over plain HTTP. A domain name with HTTPS is recommended. Make Balai listen
 locally and put a web server in front of it:
 
 ```bash
-sudo BALAI_HOST=127.0.0.1 BALAI_URL=https://balai.example.com bash /opt/balai/install.sh
+curl -fsSL https://raw.githubusercontent.com/toscani-tenekeu/balai/main/install.sh \
+  | sudo BALAI_HOST=127.0.0.1 BALAI_URL=https://balai.example.com bash
 ```
 
 ```nginx
@@ -115,8 +127,8 @@ Turn on **Install updates automatically** to have this done every six hours.
 ## Day to day
 
 ```bash
-systemctl status balai            # is it running
-journalctl -u balai -f            # logs
+systemctl status balai            # is it running (rc-service balai status on Alpine)
+journalctl -u balai -f            # logs (/var/log/balai.log on Alpine)
 cd /opt/balai && bun run passwd   # reset a forgotten password
 ```
 
@@ -127,6 +139,8 @@ sudo systemctl disable --now balai
 sudo rm /etc/systemd/system/balai.service
 sudo rm -rf /opt/balai
 ```
+
+On Alpine: `rc-update del balai && rc-service balai stop && rm /etc/init.d/balai`.
 
 ## How it is built
 
