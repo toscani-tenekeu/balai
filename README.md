@@ -1,27 +1,46 @@
+<div align="center">
+
+<img src="docs/logo.svg" alt="Balai logo" width="88" height="88">
+
 # Balai
 
-A small web panel that keeps a Debian or Ubuntu server clean and healthy.
+**Keep your server clean and healthy.**
 
-Balai runs on the server it looks after. It shows what is wrong, lets you act on
-it, and frees disk space, without agents, accounts or outside services.
+A small web panel for Debian and Ubuntu servers.<br>
+See what is wrong, act on it and free disk space, without agents, accounts or outside services.
 
-## What it does
+[![Version](https://img.shields.io/github/package-json/v/toscani-tenekeu/balai?style=flat-square&color=171717)](package.json)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![Debian / Ubuntu](https://img.shields.io/badge/debian%20%7C%20ubuntu-systemd-A81D33?style=flat-square&logo=debian&logoColor=white)](#requirements)
+[![Bun](https://img.shields.io/badge/built%20with-bun-000000?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
+[![Vue](https://img.shields.io/badge/vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white)](web)
 
-- **Overview**: CPU, memory, swap and disk at a glance, with a usage chart for the last hour, day or week.
-- **Health checks**: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock.
-- **Processes**: see what uses CPU and memory, and stop or force stop a process.
-- **Services**: start, stop, restart, enable or disable systemd services and read their recent logs.
-- **Cleanup**: apt cache, unused packages and old kernels, the systemd journal, rotated and oversized logs, old temporary files, crash reports and core dumps, old snap revisions, trash, Docker leftovers, stopped containers and unused images, settings of removed packages, developer tool caches, user caches and the memory page cache. Each item shows how much it would free before you run it, and the safe ones can be cleaned every week on their own.
-- **Disk**: every filesystem, and a folder browser that shows where the space goes and lets you delete what you no longer need.
-- **Files**: find files by extension, size or age anywhere on the server, such as every `.zip` or everything over 1 GB, and delete the ones you pick.
-- **Packages**: available updates, with security updates marked. Install one update or all of them, and uninstall packages you no longer use.
-- **Ports**: which programs are listening, and whether they are reachable from outside. Stop or restart the program or service behind a port.
-- **Activity**: a record of everything done from the panel.
-- **Updates**: Balai checks for new versions and installs them from the interface, on request or automatically.
+[Install](#install) · [Features](#features) · [Updating](#updating) · [Report a bug](https://github.com/toscani-tenekeu/balai/issues/new) · [Windows version](https://github.com/toscani-tenekeu/balai-windows)
 
-Every action that changes the server asks for confirmation first and says what
-it will do. Files and packages the operating system needs are shown but cannot
-be removed from the panel.
+<img src="docs/overview.png" alt="Balai overview: CPU, memory, swap and disk, with health checks" width="900">
+
+</div>
+
+---
+
+## Features
+
+Balai is organised in four sections, each with a few tabs.
+
+| Section | What you get |
+| --- | --- |
+| **Overview** | CPU, memory, swap and disk at a glance, a usage chart for the last hour, day or week, and health checks: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock. **Activity** keeps a record of everything done from the panel. |
+| **System** | **Processes**: what uses CPU and memory; stop or force stop. **Services**: start, stop, restart, enable or disable systemd services and read their logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
+| **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 1 GB. **Cleanup**: apt cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, developer caches and more, each showing what it frees, with an optional weekly run. |
+| **Packages** | Available updates with security updates marked. Install one or all of them, and uninstall packages you no longer use. |
+
+Actions sit right on each row, and every action that changes the server asks for
+confirmation and says what it will do. Files and packages the operating system
+needs are shown but cannot be removed. Balai also updates itself from **Settings**.
+
+<div align="center">
+<img src="docs/cleanup-dark.png" alt="Balai cleanup in dark mode" width="900">
+</div>
 
 ## Requirements
 
