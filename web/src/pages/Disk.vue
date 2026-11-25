@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { track } from '@/composables/useJobs'
 import { FileIcon, FolderIcon, Trash2Icon } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
@@ -19,7 +20,7 @@ import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableR
 import { useResource } from '@/composables/useResource'
 import { messageOf, post } from '@/lib/api'
 import { bytes, percent } from '@/lib/format'
-import type { DiskUsage, Overview } from '@/lib/types'
+import type { DiskUsage, Overview, Started } from '@/lib/types'
 
 type Entry = DiskUsage['entries'][number]
 
@@ -54,12 +55,18 @@ async function remove() {
   pending.value = null
   deleting.value = entry.path
   try {
-    if (entry.directory) await post('/files/delete-folder', { path: entry.path })
-    else {
+    if (entry.directory) {
+      // A large folder takes a while: it runs as a task that can be followed and cancelled from Tasks.
+      const answer = await post<Started>('/files/delete-folder', { path: entry.path })
+      const job = await track(answer.job, { quiet: true })
+      if (job.state === 'cancelled') toast(`Deleting ${entry.name} was cancelled. Part of it may already be gone.`)
+      else if (job.state !== 'done') throw new Error(job.message ?? 'The folder could not be deleted.')
+      else toast.success(`Deleted ${entry.name}, ${bytes(entry.size)} freed.`)
+    } else {
       const result = await post<{ failed: { message: string }[] }>('/files/delete', { paths: [entry.path] })
       if (result.failed.length) throw new Error(result.failed[0]!.message)
+      toast.success(`Deleted ${entry.name}, ${bytes(entry.size)} freed.`)
     }
-    toast.success(`Deleted ${entry.name}, ${bytes(entry.size)} freed.`)
   } catch (failure) {
     toast.error(messageOf(failure))
   }

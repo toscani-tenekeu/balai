@@ -1,6 +1,7 @@
 import { logActivity } from './db.ts'
 import { backend, type InstalledPackage, type Upgrade } from './pm.ts'
-import { reason } from './sys.ts'
+import { getJob, runningJob, startJob } from './jobs.ts'
+import { eachLine, reason, spawn } from './sys.ts'
 
 export type { InstalledPackage, Upgrade } from './pm.ts'
 
@@ -98,7 +99,7 @@ export async function removalPlan(name: string) {
 }
 
 export interface Job {
-  id: number
+  id: string
   title: string
   running: boolean
   ok: boolean | null
@@ -107,65 +108,66 @@ export interface Job {
   finishedAt: number | null
 }
 
-let job: Job | null = null
-let jobs = 0
+let last: string | null = null
 
-export const packageJob = () => job
-export const packageJobRunning = () => job?.running === true
+/** The latest package task, in the shape the Packages page reads. */
+export function packageJob(): Job | null {
+  const found = last ? getJob(last)?.job : null
+  if (!found) return null
+  return {
+    id: found.id,
+    title: found.title,
+    running: found.state === 'running',
+    ok: found.state === 'running' ? null : found.state === 'done',
+    output: found.output,
+    startedAt: found.startedAt,
+    finishedAt: found.finishedAt,
+  }
+}
+
+export const packageJobRunning = () => runningJob('packages') !== null
 
 /** dpkg's percentage counter, which would fill the output with noise. */
 const PROGRESS = /^\(Reading database \.\.\. \d*%?$/
 
-async function collect(stream: ReadableStream<Uint8Array>, output: string[]) {
-  const decoder = new TextDecoder()
-  let rest = ''
-  for await (const chunk of stream) {
-    const parts = (rest + decoder.decode(chunk, { stream: true })).split(/\r?\n|\r/)
-    rest = parts.pop() ?? ''
-    for (const part of parts) if (part.trim() && !PROGRESS.test(part)) output.push(part)
-    if (output.length > 400) output.splice(0, output.length - 400)
-  }
-  if (rest.trim()) output.push(rest)
-}
-
-/** Package work can take minutes, so it runs in the background and the interface follows its output. */
+/** Package work can take minutes, so it runs as a task and the interface follows its output. */
 function start(title: string, cmd: string[], entry: { action: string; target?: string }): { ok: boolean; message: string } {
-  if (job?.running) return { ok: false, message: 'Another package operation is still running.' }
-  const current: Job = { id: ++jobs, title, running: true, ok: null, output: [], startedAt: Date.now(), finishedAt: null }
-  job = current
-
-  void (async () => {
-    let ok = false
-    try {
-      const proc = Bun.spawn(cmd, {
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 1_800_000,
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...backend?.env },
+  if (packageJobRunning()) return { ok: false, message: 'Another package operation is still running.' }
+  const job = startJob(
+    {
+      kind: 'packages',
+      title,
+      link: '/packages',
+      cancellable: false,
+      keep: 'Stopping the package manager halfway can leave packages half installed, so this task runs to the end.',
+    },
+    async (handle) => {
+      let ok = false
+      try {
+        const proc = spawn(cmd, { timeout: 1_800_000, env: backend?.env })
+        const keep = (line: string) => {
+          if (PROGRESS.test(line)) return
+          handle.log(line)
+          handle.job.now = line.slice(0, 200)
+        }
+        const [, , code] = await Promise.all([eachLine(proc.stdout, keep), eachLine(proc.stderr, keep), proc.exited])
+        ok = code === 0
+      } catch (error) {
+        handle.log(error instanceof Error ? error.message : String(error))
+      }
+      cache = null
+      logActivity({
+        area: 'packages',
+        action: ok ? entry.action : `${entry.action}: failed`,
+        target: entry.target,
+        detail: ok ? '' : handle.job.output.slice(-8).join('\n'),
+        ok,
       })
-      const [, , code] = await Promise.all([
-        collect(proc.stdout, current.output),
-        collect(proc.stderr, current.output),
-        proc.exited,
-      ])
-      ok = code === 0
-    } catch (error) {
-      current.output.push(error instanceof Error ? error.message : String(error))
-    }
-    current.running = false
-    current.ok = ok
-    current.finishedAt = Date.now()
-    cache = null
-    logActivity({
-      area: 'packages',
-      action: ok ? entry.action : `${entry.action}: failed`,
-      target: entry.target,
-      detail: ok ? '' : current.output.slice(-8).join('\n'),
-      ok,
-    })
-  })()
-
+      if (!ok) throw new Error(handle.job.output.at(-1) ?? `${title} failed.`)
+      return { message: `${title}: done.` }
+    },
+  )
+  last = job.id
   return { ok: true, message: `${title} started.` }
 }
 

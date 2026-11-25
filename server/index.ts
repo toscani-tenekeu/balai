@@ -5,12 +5,13 @@ import {
   allowAttempt, checkPassword, checkSetupToken, createSession, endSession, ensureAdmin,
   finishSetup, isAuthed, sessionCookie, setPassword, setupFile, setupPending,
 } from './auth.ts'
-import { cleanupSchedule, listCleanup, runCleanup, setCleanupSchedule, startScheduledCleanup } from './cleanup.ts'
+import { cleanupSchedule, listCleanup, setCleanupSchedule, startCleanup, startScheduledCleanup } from './cleanup.ts'
 import { config } from './config.ts'
 import { db, logActivity } from './db.ts'
 import { usage } from './disk.ts'
-import { deleteFiles, deleteFolder, searchFiles } from './files.ts'
+import { deleteFiles, imagePreview, startDeleteFolder, startSearch, startUsageCheck } from './files.ts'
 import { health } from './health.ts'
+import { Cancelled, cancelJob, clearFinished, getJob, listJobs, scope } from './jobs.ts'
 import { history, overview, startSampling } from './metrics.ts'
 import {
   installedPackages, packageJob, packageState, refreshIndex, removalPlan, removePackage, upgradePackages,
@@ -150,9 +151,8 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
   if (route === 'POST /cleanup') {
     const data = await body(req)
     const ids = Array.isArray(data.ids) ? data.ids.filter((id): id is string => typeof id === 'string') : []
-    if (!ids.length) return fail('Nothing selected.')
-    const result = await runCleanup(ids)
-    return json(result, result.message ? 409 : 200)
+    const started = startCleanup(ids)
+    return started.ok ? json({ ok: true, job: started.job }) : json({ ok: false, message: started.message, job: started.job }, 409)
   }
 
   if (route === 'GET /disk') {
@@ -188,15 +188,35 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
     return json(result, result.ok ? 200 : 409)
   }
 
-  if (route === 'GET /files') {
-    const query = url.searchParams
-    const result = await searchFiles({
-      path: query.get('path') ?? '/',
-      extensions: (query.get('ext') ?? '').split(/[\s,;]+/),
-      minBytes: Number(query.get('min')) || 0,
-      olderThanDays: Number(query.get('days')) || 0,
+  if (route === 'POST /files/search') {
+    const data = await body(req)
+    const started = startSearch({
+      path: typeof data.path === 'string' ? data.path : '/',
+      extensions: (typeof data.ext === 'string' ? data.ext : '').split(/[\s,;]+/),
+      minBytes: Number(data.min) || 0,
+      olderThanDays: Number(data.days) || 0,
     })
-    return json(result, result.ok ? 200 : 400)
+    return started.ok ? json({ ok: true, job: started.job }) : fail(started.message)
+  }
+
+  if (route === 'POST /files/usage') {
+    const data = await body(req)
+    const job = Array.isArray(data.paths) ? startUsageCheck(data.paths) : null
+    return job ? json({ ok: true, job }) : fail('Nothing to check.')
+  }
+
+  if (route === 'GET /files/preview') {
+    const image = imagePreview(url.searchParams.get('path'))
+    if (!image) return fail('No preview for this file.', 404)
+    return new Response(Bun.file(image.file), {
+      headers: {
+        ...HEADERS,
+        'Content-Type': image.type,
+        'Cache-Control': 'private, max-age=60',
+        // An SVG opened on its own must not run scripts with the panel's rights.
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      },
+    })
   }
 
   if (route === 'POST /files/delete') {
@@ -206,8 +226,23 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
   }
 
   if (route === 'POST /files/delete-folder') {
-    const result = await deleteFolder((await body(req)).path)
-    return json(result, result.ok ? 200 : 400)
+    const started = startDeleteFolder((await body(req)).path)
+    return started.ok ? json({ ok: true, job: started.job }) : fail(started.message)
+  }
+
+  if (route === 'GET /jobs') return json(listJobs())
+  if (route === 'POST /jobs/clear') {
+    clearFinished()
+    return json(listJobs())
+  }
+  const task = path.match(/^\/jobs\/([0-9a-f-]{36})(\/cancel)?$/)
+  if (task && req.method === 'GET' && !task[2]) {
+    const found = getJob(task[1]!)
+    return found ? json(found) : fail('This task is no longer listed.', 404)
+  }
+  if (task && req.method === 'POST' && task[2]) {
+    const result = cancelJob(task[1]!)
+    return json(result, result.ok ? 200 : 409)
   }
 
   if (route === 'GET /cleanup/schedule') return json(cleanupSchedule())
@@ -268,11 +303,16 @@ const server = Bun.serve({
     const url = new URL(req.url)
     try {
       if (url.pathname.startsWith('/api/')) {
-        return await api(req, url, srv.requestIP(req)?.address ?? 'unknown')
+        const address = srv.requestIP(req)?.address ?? 'unknown'
+        // Programs run to answer a GET stop when the browser stops waiting for the answer.
+        if (req.method === 'GET') return await scope.run({ signal: req.signal, job: null }, () => api(req, url, address))
+        return await api(req, url, address)
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return fail('Not found.', 404)
       return await asset(url)
     } catch (error) {
+      // The browser left before the answer was ready.
+      if (error instanceof Cancelled) return new Response(null, { status: 499 })
       console.error(error)
       return fail('Something went wrong on the server.', 500)
     }
