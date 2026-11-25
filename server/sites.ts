@@ -16,6 +16,16 @@ export interface WebRoot {
   logs: string[]
 }
 
+/** A site address that nginx, Apache or Caddy hands to a program listening on this server. */
+export interface WebProxy {
+  site: string
+  scheme: 'http' | 'https'
+  path: string
+  port: number
+}
+
+let proxyList: WebProxy[] = []
+
 /** Releases of a site deployed side by side, with a link pointing at the one that is live. */
 export interface ReleaseSet {
   site: string
@@ -78,7 +88,7 @@ function siteName(names: string[]): string {
   return names.find((name) => name !== '_' && name !== 'localhost' && !name.startsWith('~')) ?? 'Default site'
 }
 
-async function nginxRoots(): Promise<WebRoot[]> {
+async function nginxRoots(proxies: WebProxy[]): Promise<WebRoot[]> {
   if (!has('nginx')) return []
   const result = await run(['nginx', '-T'], { timeout: 20_000 })
   if (!result.stdout) return []
@@ -99,6 +109,17 @@ async function nginxRoots(): Promise<WebRoot[]> {
       .filter((item) => item.name === 'access_log' && item.args[0] && item.args[0] !== 'off')
       .map((item) => item.args[0]!)
     const base = { server: 'nginx' as const, site: siteName(names), scheme: scheme as 'http' | 'https', logs }
+    // Locations handed to a local program: proxy_pass http://127.0.0.1:3000 and the like.
+    const collect = (list: Directive[], path: string) => {
+      for (const item of list) {
+        if (item.name === 'proxy_pass' && item.args[0]) {
+          const port = item.args[0].match(/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0):(\d+)/)?.[1]
+          if (port) proxies.push({ site: base.site, scheme: base.scheme, path, port: Number(port) })
+        }
+        if (item.name === 'location' && item.block) collect(item.block, item.args.at(-1) ?? path)
+      }
+    }
+    collect(block, '/')
 
     const add = (declared: string, mount: string) => {
       if (!declared.startsWith('/') || declared.includes('$')) return
@@ -223,7 +244,15 @@ let cached: { at: number; roots: WebRoot[] } | null = null
 /** Every folder that nginx, Apache or Caddy serves, read from their configuration. */
 export async function webRoots(): Promise<WebRoot[]> {
   if (cached && Date.now() - cached.at < 60_000) return cached.roots
-  const all = [...(await nginxRoots()), ...apacheRoots(), ...caddyRoots()]
+  const proxies: WebProxy[] = []
+  const all = [...(await nginxRoots(proxies)), ...apacheRoots(), ...caddyRoots()]
+  const seenProxy = new Set<string>()
+  proxyList = proxies.filter((proxy) => {
+    const key = `${proxy.site}|${proxy.port}`
+    if (seenProxy.has(key)) return false
+    seenProxy.add(key)
+    return true
+  })
   const seen = new Set<string>()
   const roots = all.filter((root) => {
     const key = `${root.site}|${root.dir}|${root.mount}`
@@ -233,6 +262,12 @@ export async function webRoots(): Promise<WebRoot[]> {
   })
   cached = { at: Date.now(), roots }
   return roots
+}
+
+/** Site addresses handed to local programs, by port. Read with the web roots. */
+export async function webProxies(): Promise<WebProxy[]> {
+  await webRoots()
+  return proxyList
 }
 
 /** The web root that serves a file, preferring the most specific one. */

@@ -10,7 +10,9 @@ import { config } from './config.ts'
 import { db, logActivity } from './db.ts'
 import { usage } from './disk.ts'
 import { deleteFiles, imagePreview, startDeleteFolder, startSearch, startUsageCheck } from './files.ts'
+import { appDetail, containerAction, listApps } from './apps.ts'
 import { health } from './health.ts'
+import { serviceHints } from './hints.ts'
 import { Cancelled, cancelJob, clearFinished, getJob, listJobs, scope } from './jobs.ts'
 import { history, overview, startSampling } from './metrics.ts'
 import {
@@ -146,6 +148,7 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
   }
 
   if (route === 'GET /services') return json(await listServices())
+  if (route === 'GET /services/hints') return json(await serviceHints())
 
   const service = path.match(/^\/services\/([^/]+)\/(\w+)$/)
   if (service) {
@@ -244,6 +247,17 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
   if (route === 'POST /files/delete-folder') {
     const started = startDeleteFolder((await body(req)).path)
     return started.ok ? json({ ok: true, job: started.job }) : fail(started.message)
+  }
+
+  if (route === 'GET /apps') return json(await listApps())
+  if (route === 'GET /apps/detail') {
+    const detail = await appDetail(url.searchParams.get('id') ?? '')
+    return detail ? json(detail) : fail('That app is no longer installed.', 404)
+  }
+  const container = path.match(/^\/apps\/containers\/([^/]+)\/(start|stop|restart)$/)
+  if (container && req.method === 'POST') {
+    const result = await containerAction(decodeURIComponent(container[1]!), container[2]!)
+    return json(result, result.ok ? 200 : 400)
   }
 
   if (route === 'GET /jobs') return json(listJobs())

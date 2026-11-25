@@ -1,5 +1,5 @@
 import {
-  CpuIcon, FileSearchIcon, HardDriveIcon, HistoryIcon, LayoutDashboardIcon, NetworkIcon, PackageIcon,
+  AppWindowIcon, CpuIcon, FileSearchIcon, HardDriveIcon, HistoryIcon, LayoutDashboardIcon, NetworkIcon, PackageIcon,
   ServerCogIcon, Trash2Icon,
 } from '@lucide/vue'
 import type { Component } from 'vue'
@@ -23,6 +23,10 @@ export const sections: Section[] = [
       { to: '/services', label: 'Services', icon: ServerCogIcon },
       { to: '/ports', label: 'Ports', icon: NetworkIcon },
     ],
+  },
+  {
+    id: 'apps', label: 'Apps', icon: AppWindowIcon,
+    tabs: [{ to: '/apps', label: 'Apps', icon: AppWindowIcon }],
   },
   {
     id: 'storage', label: 'Storage', icon: HardDriveIcon,

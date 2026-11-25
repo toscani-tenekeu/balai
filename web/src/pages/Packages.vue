@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RiskBadge from '@/components/packages/RiskBadge.vue'
 import SortHead from '@/components/SortHead.vue'
 import { useSorting } from '@/composables/useSorting'
 import { CircleCheckIcon, RefreshCwIcon, SearchIcon, TriangleAlertIcon } from '@lucide/vue'
@@ -78,6 +79,7 @@ const shownUpdates = computed(() => {
   return (data.value?.upgrades ?? []).filter((item) => {
     if (updateFilter.value === 'security' && !item.security) return false
     if (updateFilter.value === 'restart' && !sizeOf.value.get(item.name)?.restart) return false
+    if (updateFilter.value === 'risky' && (sizeOf.value.get(item.name)?.risk.level ?? 'safe') === 'safe') return false
     return !term || item.name.toLowerCase().includes(term)
   })
 })
@@ -270,6 +272,7 @@ onBeforeUnmount(() => clearInterval(timer))
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger v-if="data.tracksSecurity" value="security">Security {{ security }}</TabsTrigger>
                 <TabsTrigger v-if="plan?.restart.length" value="restart">Need a restart {{ plan.restart.length }}</TabsTrigger>
+                <TabsTrigger v-if="plan && plan.blocked + plan.risky" value="risky">Blocked or risky {{ plan.blocked + plan.risky }}</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -283,6 +286,7 @@ onBeforeUnmount(() => clearInterval(timer))
                   <TableHead>Installed</TableHead>
                   <TableHead>Available</TableHead>
                   <TableHead v-if="data.tracksSecurity">Type</TableHead>
+                  <TableHead>Risk</TableHead>
                   <SortHead label="Download" column="download" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
                   <SortHead label="Size change" column="change" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
                   <TableHead class="w-20"><span class="sr-only">Actions</span></TableHead>
@@ -295,6 +299,10 @@ onBeforeUnmount(() => clearInterval(timer))
                   <TableCell class="max-w-48 truncate font-mono text-xs">{{ item.next }}</TableCell>
                   <TableCell v-if="data.tracksSecurity">
                     <StatusBadge :tone="item.security ? 'bad' : 'idle'">{{ item.security ? 'Security' : 'Regular' }}</StatusBadge>
+                  </TableCell>
+                  <TableCell>
+                    <RiskBadge v-if="sizeOf.get(item.name)" :risk="sizeOf.get(item.name)!.risk" />
+                    <Skeleton v-else-if="!plan && !planError" class="h-5 w-16" />
                   </TableCell>
                   <TableCell class="text-muted-foreground text-right whitespace-nowrap tabular-nums">
                     <template v-if="sizeOf.get(item.name)?.cached">Downloaded</template>
@@ -316,7 +324,7 @@ onBeforeUnmount(() => clearInterval(timer))
                     </Button>
                   </TableCell>
                 </TableRow>
-                <TableEmpty v-if="!shownUpdates.length" :colspan="8">No update matches.</TableEmpty>
+                <TableEmpty v-if="!shownUpdates.length" :colspan="9">No update matches.</TableEmpty>
               </TableBody>
             </Table>
             <Empty v-else>
@@ -398,6 +406,26 @@ onBeforeUnmount(() => clearInterval(timer))
           kept as they are.
         </AlertDialogDescription>
       </AlertDialogHeader>
+      <Alert
+        v-if="onePlan && upgrade?.name && onePlan.packages[0] && onePlan.packages[0].risk.level !== 'safe'"
+        :variant="onePlan.packages[0].risk.level === 'blocked' ? 'destructive' : 'default'"
+      >
+        <TriangleAlertIcon />
+        <AlertTitle>{{ onePlan.packages[0].risk.level === 'blocked' ? 'This update is blocked' : 'Check before updating' }}</AlertTitle>
+        <AlertDescription>
+          <ul class="list-disc pl-4">
+            <li v-for="reason in onePlan.packages[0].risk.reasons" :key="reason">{{ reason }}</li>
+          </ul>
+        </AlertDescription>
+      </Alert>
+      <Alert v-else-if="onePlan && !upgrade?.name && onePlan.blocked + onePlan.risky">
+        <TriangleAlertIcon />
+        <AlertTitle>{{ onePlan.blocked }} blocked, {{ onePlan.risky }} to check first</AlertTitle>
+        <AlertDescription>
+          Blocked updates are left out of "Install all". The ones to check first restart services, change major versions or
+          need a server restart: see the Risk column.
+        </AlertDescription>
+      </Alert>
       <UpdatePlanSummary :plan="onePlan" :error="onePlanError" compact />
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import HintBadge from '@/components/HintBadge.vue'
 import SortHead from '@/components/SortHead.vue'
 import { useSorting } from '@/composables/useSorting'
 import { SearchIcon, SquareIcon, ZapIcon } from '@lucide/vue'
@@ -13,23 +14,37 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useResource } from '@/composables/useResource'
 import { messageOf, post } from '@/lib/api'
 import { bytes, duration } from '@/lib/format'
-import type { ActionResult, ProcessInfo } from '@/lib/types'
+import type { ActionResult, Hint, ProcessInfo } from '@/lib/types'
 
 const { data, error, refresh } = useResource<ProcessInfo[]>('/processes', 5000)
 const search = ref('')
+const show = ref('all')
+const { data: hints } = useResource<Record<string, Hint>>('/services/hints', 60_000)
+const BY_HAND: Hint = {
+  role: 'unused',
+  label: 'Started by hand',
+  detail: 'Started from a login session (SSH or console) rather than by a service. Nothing restarts it if it stops.',
+}
+/** What a process is for, from the service it belongs to. */
+function hintOf(item: ProcessInfo): Hint | null {
+  if (item.unit) return hints.value?.[item.unit] ?? { role: 'app', label: item.unit.replace(/\.service$/, ''), detail: `Part of the service ${item.unit}.` }
+  return item.session ? BY_HAND : null
+}
 const pending = ref<{ process: ProcessInfo; action: 'stop' | 'kill' } | null>(null)
 
 const filtered = computed(() => {
   const term = search.value.trim().toLowerCase()
-  return (data.value ?? []).filter(
-    (item) => !term || item.command.toLowerCase().includes(term) || item.user.includes(term) || String(item.pid) === term,
-  )
+  return (data.value ?? []).filter((item) => {
+    if (show.value === 'unneeded' && hintOf(item)?.role !== 'unneeded') return false
+    if (show.value === 'hand' && !item.session) return false
+    return !term || item.command.toLowerCase().includes(term) || item.user.includes(term) || String(item.pid) === term
+  })
 })
 const { sortBy, descending, sorted, toggle } = useSorting<ProcessInfo>(
   () => filtered.value,
@@ -67,6 +82,13 @@ async function confirm() {
       <SearchIcon class="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
       <Input v-model="search" class="pl-8" placeholder="Filter by name, user or PID" aria-label="Filter processes" />
     </div>
+    <Tabs v-model="show">
+      <TabsList>
+        <TabsTrigger value="all">All</TabsTrigger>
+        <TabsTrigger value="unneeded">Not needed {{ (data ?? []).filter((item) => hintOf(item)?.role === 'unneeded').length }}</TabsTrigger>
+        <TabsTrigger value="hand">Started by hand {{ (data ?? []).filter((item) => item.session).length }}</TabsTrigger>
+      </TabsList>
+    </Tabs>
     <p v-if="data" class="text-muted-foreground ml-auto text-sm">{{ data.length }} running</p>
   </div>
 
@@ -76,6 +98,7 @@ async function confirm() {
         <TableHeader>
           <TableRow>
             <SortHead label="Process" column="name" class="pl-4" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
+            <TableHead>Purpose</TableHead>
             <SortHead label="PID" column="pid" :sort-by="sortBy" :descending="descending" @sort="toggle" />
             <SortHead label="User" column="user" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
             <SortHead label="CPU" column="cpu" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
@@ -90,6 +113,9 @@ async function confirm() {
               <p class="truncate font-medium">{{ item.name }}</p>
               <p class="text-muted-foreground truncate font-mono text-xs" :title="item.command">{{ item.command }}</p>
             </TableCell>
+            <TableCell>
+              <HintBadge v-if="hintOf(item)" :hint="hintOf(item)!" />
+            </TableCell>
             <TableCell class="tabular-nums">{{ item.pid }}</TableCell>
             <TableCell>{{ item.user }}</TableCell>
             <TableCell class="text-right tabular-nums">{{ item.cpu.toFixed(1) }}%</TableCell>
@@ -102,7 +128,7 @@ async function confirm() {
               </div>
             </TableCell>
           </TableRow>
-          <TableEmpty v-if="!visible.length" :colspan="7">No process matches that filter.</TableEmpty>
+          <TableEmpty v-if="!visible.length" :colspan="8">No process matches that filter.</TableEmpty>
         </TableBody>
       </Table>
       <div v-else class="flex flex-col gap-2 p-4">

@@ -2,7 +2,8 @@ import { getSetting, logActivity, setSetting } from './db.ts'
 import { filesystems } from './metrics.ts'
 import { backend, type InstalledPackage, type Upgrade, type UpgradeSize } from './pm.ts'
 import { getJob, runningJob, startJob } from './jobs.ts'
-import { eachLine, formatBytes, reason, spawn } from './sys.ts'
+import { heldPackages, packageFiles } from './pkginfo.ts'
+import { eachLine, formatBytes, lines, reason, run, spawn } from './sys.ts'
 
 export type { InstalledPackage, Upgrade } from './pm.ts'
 
@@ -211,6 +212,12 @@ export interface PlanPackage {
   change: number | null
   cached: boolean
   restart: boolean
+  risk: Risk
+}
+
+export interface Risk {
+  level: 'safe' | 'caution' | 'blocked'
+  reasons: string[]
 }
 
 export interface DiskImpact {
@@ -240,6 +247,9 @@ export interface UpdatePlan {
   restart: string[]
   keptBack: string[]
   warnings: string[]
+  /** Updates that "install all" leaves out, and those worth a look first. */
+  blocked: number
+  risky: number
 }
 
 /** Updates to these usually only take full effect after a restart of the server. */
@@ -310,8 +320,11 @@ export async function updatePlan(name: string | null): Promise<UpdatePlan | { ok
       change: size?.installed != null && before != null ? size.installed - before : null,
       cached: size?.cached ?? false,
       restart: NEEDS_RESTART.test(item.name),
+      risk: { level: 'safe', reasons: [] },
     }
   })
+
+  await assessRisks(upgrades, packages, keptBack)
 
   const download = packages.reduce((sum, item) => sum + (!item.cached ? item.download ?? 0 : 0), 0)
   const cachedBytes = packages.reduce((sum, item) => sum + (item.cached ? item.download ?? 0 : 0), 0)
@@ -359,7 +372,73 @@ export async function updatePlan(name: string | null): Promise<UpdatePlan | { ok
     restart: packages.filter((item) => item.restart).map((item) => item.name),
     keptBack,
     warnings,
+    blocked: packages.filter((item) => item.risk.level === 'blocked').length,
+    risky: packages.filter((item) => item.risk.level === 'caution').length,
   }
   planCache = { key, at: Date.now(), plan }
   return plan
+}
+
+// ---- Update risks ------------------------------------------------------------------------------
+
+/** The first number of a version, without the epoch: "1:2.4.58-1" → 2. */
+function major(version: string): { epoch: number; major: number | null } {
+  const epoch = Number(version.match(/^(\d+):/)?.[1] ?? 0)
+  // Only "major.minor" versions say something by their first number; "293ubuntu1" is a counter.
+  const value = version.replace(/^\d+:/, '').match(/^(\d+)\.\d/)?.[1]
+  return { epoch, major: value === undefined ? null : Number(value) }
+}
+
+const DATABASE = /^(postgresql(-\d+)?|mysql-server|mysql-community-server|mariadb-server|mongodb(-org)?(-server)?|redis-server|redis)$/
+
+/** What an update could break, worked out from the package manager and what runs on the server. */
+async function assessRisks(upgrades: Upgrade[], packages: PlanPackage[], keptBack: string[]) {
+  const held = await heldPackages().catch(() => new Set<string>())
+  const running = new Set(
+    // Only programs that keep running; one-off startup tasks (ldconfig and the like) do not count.
+    lines((await run(['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', '--plain', '--no-pager'])).stdout)
+      .map((line) => line.split(/\s+/)[0]!),
+  )
+  for (const [index, upgrade] of upgrades.entries()) {
+    const entry = packages[index]!
+    const blocked: string[] = []
+    const caution: string[] = []
+    const base = upgrade.name.split(':')[0]!
+
+    if (held.has(base) || held.has(upgrade.name)) {
+      blocked.push('It is held at its current version, so updates leave it alone until the hold is lifted.')
+    }
+    if (keptBack.includes(base)) {
+      const simulated = await run(['apt-get', '-s', '-o', 'Debug::NoLocking=1', 'install', '--only-upgrade', base], { timeout: 60_000, env: backend?.env })
+      const removes = lines(simulated.stdout).map((line) => line.match(/^Remv (\S+)/)?.[1]).filter((name): name is string => !!name)
+      const adds = lines(simulated.stdout)
+        .map((line) => line.match(/^Inst (\S+) \((?!.*\[)/)?.[1])
+        .filter((name): name is string => !!name && name !== base)
+      if (removes.length) blocked.push(`Installing it would remove ${removes.slice(0, 5).join(', ')}${removes.length > 5 ? ` and ${removes.length - 5} more` : ''}.`)
+      else if (adds.length) caution.push(`It needs new packages (${adds.slice(0, 4).join(', ')}), so a normal update leaves it out. Update it on its own.`)
+      else caution.push('The package manager holds it back from a normal update. Update it on its own to see what changes.')
+    }
+
+    const before = major(upgrade.current)
+    const after = major(upgrade.next)
+    const jump = before.epoch !== after.epoch || (before.major !== null && after.major !== null && after.major > before.major)
+    if (jump && before.major !== null && after.major !== null) {
+      if (DATABASE.test(base)) caution.push(`Database version ${before.major} → ${after.major}: stored data may need converting. Read its upgrade notes first.`)
+      else caution.push(`Major version ${before.major} → ${after.major}: settings or behaviour may change. Read its release notes first.`)
+    }
+
+    // A service the package installs that is running now restarts during the update.
+    const files = await packageFiles(base).catch(() => [] as string[])
+    const services = [...new Set(files.filter((file) => /\/systemd\/system\/[^/]+\.service$/.test(file)).map((file) => file.split('/').pop()!))]
+      .filter((service) => running.has(service))
+    if (services.length) caution.push(`Restarts ${services.map((service) => service.replace(/\.service$/, '')).join(', ')} while installing: unavailable for a moment.`)
+
+    if (entry.restart) caution.push('Takes full effect only after the server restarts.')
+
+    entry.risk = blocked.length
+      ? { level: 'blocked', reasons: [...blocked, ...caution] }
+      : caution.length
+        ? { level: 'caution', reasons: caution }
+        : { level: 'safe', reasons: [] }
+  }
 }

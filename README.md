@@ -25,14 +25,15 @@ See what is wrong, act on it and free disk space, without agents, accounts or ou
 
 ## Features
 
-Balai is organised in four sections, each with a few tabs.
+Balai is organised in five sections, each with a few tabs.
 
 | Section | What you get |
 | --- | --- |
 | **Overview** | CPU, memory, swap and disk at a glance, a usage chart for the last hour, day or week, and health checks: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock. **Activity** keeps a record of everything done from the panel. |
-| **System** | **Processes**: what uses CPU and memory; stop or force stop. **Services**: start, stop, restart, enable or disable services (systemd, or OpenRC on Alpine) and read their logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
+| **System** | **Processes** and **Services** say what each one is for: needed by the system, runs a website, part of an app, or not needed on this server (printing, Wi-Fi, desktop helpers, a PHP version no site uses…) with the reason. Stop, restart, enable, disable and read logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
+| **Apps** | Everything installed, in three groups: installed by you, came with the system, needed by the system. Each app shows its websites, services, ports, folders and sizes, packages, what depends on it, its git source and auto-deploy timers, what you can do with it, and whether it is safe to remove, with the steps to take. |
 | **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 250 MB, and see whether each one is used: live on a website (with its address, the pages that link to it and how often it was requested), in an old release, in a project and its git state, a copy of a live file, open in a program, or not used anywhere. **Cleanup**: the package cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, old website releases, developer caches and more, each showing what it frees, with an optional weekly run. |
-| **Packages** | Available updates with security updates marked, how much they download, how much space they take once installed, how long they should take on this server and how much free disk space is left afterwards. Updates held back and updates that need a restart are pointed out. Install one or all of them, and uninstall packages you no longer use. |
+| **Packages** | Available updates with security updates marked, how much they download, how much space they take once installed, how long they should take on this server and how much free disk space is left afterwards. Each update is marked safe, to check first (major version, restarts a running service, needs a restart) or blocked (held, or would remove other packages), with the reasons. Install one or all of them, and uninstall packages you no longer use. |
 
 Actions sit right on each row, and every action that changes the server asks for
 confirmation and says what it will do. Long work (searches, cleanups, deleting a large
