@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import HintBadge from '@/components/HintBadge.vue'
 import { EraserIcon, PlayIcon, PowerIcon, PowerOffIcon, RotateCwIcon, ScrollTextIcon, SearchIcon, SquareIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
@@ -20,11 +21,14 @@ import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableR
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useResource } from '@/composables/useResource'
 import { api, messageOf, post } from '@/lib/api'
-import type { ActionResult, ServiceInfo } from '@/lib/types'
+import type { ActionResult, ServiceInfo, Hint } from '@/lib/types'
 
 type Action = 'start' | 'stop' | 'restart' | 'enable' | 'disable' | 'reset'
 
 const { data, error, refresh } = useResource<ServiceInfo[]>('/services', 10_000)
+// What each service is for: needed, runs a site, part of an app, or useless here.
+const { data: hints } = useResource<Record<string, Hint>>('/services/hints', 60_000)
+const hintOf = (item: ServiceInfo) => hints.value?.[item.name] ?? null
 const search = ref('')
 const filter = ref('all')
 const busy = ref('')
@@ -34,6 +38,7 @@ const logs = ref<{ name: string; lines: string[] | null } | null>(null)
 const counts = computed(() => ({
   running: data.value?.filter((item) => item.active === 'active').length ?? 0,
   failed: data.value?.filter((item) => item.active === 'failed').length ?? 0,
+  unneeded: data.value?.filter((item) => hintOf(item)?.role === 'unneeded').length ?? 0,
 }))
 
 const visible = computed(() => {
@@ -42,6 +47,7 @@ const visible = computed(() => {
     if (filter.value === 'running' && item.active !== 'active') return false
     if (filter.value === 'failed' && item.active !== 'failed') return false
     if (filter.value === 'stopped' && item.active !== 'inactive') return false
+    if (filter.value === 'unneeded' && hintOf(item)?.role !== 'unneeded') return false
     return !term || item.name.toLowerCase().includes(term) || item.description.toLowerCase().includes(term)
   })
 })
@@ -106,6 +112,7 @@ async function showLogs(service: ServiceInfo) {
         <TabsTrigger value="running">Running {{ counts.running }}</TabsTrigger>
         <TabsTrigger value="failed">Failed {{ counts.failed }}</TabsTrigger>
         <TabsTrigger value="stopped">Stopped</TabsTrigger>
+        <TabsTrigger value="unneeded">Not needed {{ counts.unneeded }}</TabsTrigger>
       </TabsList>
     </Tabs>
   </div>
@@ -116,6 +123,7 @@ async function showLogs(service: ServiceInfo) {
         <TableHeader>
           <TableRow>
             <TableHead class="pl-4">Service</TableHead>
+            <TableHead>Purpose</TableHead>
             <TableHead>State</TableHead>
             <TableHead>At boot</TableHead>
             <TableHead class="w-36 pr-4 text-right">Actions</TableHead>
@@ -126,6 +134,9 @@ async function showLogs(service: ServiceInfo) {
             <TableCell class="max-w-96 pl-4">
               <p class="truncate font-medium">{{ short(item.name) }}</p>
               <p class="text-muted-foreground truncate text-xs">{{ item.description }}</p>
+            </TableCell>
+            <TableCell>
+              <HintBadge v-if="hintOf(item)" :hint="hintOf(item)!" />
             </TableCell>
             <TableCell>
               <StatusBadge :tone="item.active === 'failed' ? 'bad' : item.active === 'active' ? 'good' : 'idle'">
@@ -150,7 +161,7 @@ async function showLogs(service: ServiceInfo) {
               </div>
             </TableCell>
           </TableRow>
-          <TableEmpty v-if="!visible.length" :colspan="4">No service matches.</TableEmpty>
+          <TableEmpty v-if="!visible.length" :colspan="5">No service matches.</TableEmpty>
         </TableBody>
       </Table>
       <div v-else class="flex flex-col gap-2 p-4">

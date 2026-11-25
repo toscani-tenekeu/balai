@@ -53,6 +53,8 @@ export interface ProcessInfo {
   elapsed: number
   name: string
   command: string
+  unit: string | null
+  session: boolean
 }
 
 export interface ServiceInfo {
@@ -78,7 +80,7 @@ export interface CleanupResult {
   ok: boolean
   message: string
   freed: number
-  results: { id: string; title: string; ok: boolean; message: string | null; freed: number }[]
+  results: { id: string; title: string; ok: boolean; message: string | null; freed: number; released?: number }[]
 }
 
 export interface DiskUsage {
@@ -261,6 +263,7 @@ export interface PlanPackage {
   change: number | null
   cached: boolean
   restart: boolean
+  risk: Risk
 }
 
 export interface DiskImpact {
@@ -287,4 +290,55 @@ export interface UpdatePlan {
   restart: string[]
   keptBack: string[]
   warnings: string[]
+  blocked: number
+  risky: number
+}
+
+export interface Hint {
+  role: 'system' | 'site' | 'app' | 'unneeded' | 'unused'
+  label: string
+  detail: string
+}
+
+export interface Risk {
+  level: 'safe' | 'caution' | 'blocked'
+  reasons: string[]
+}
+
+export type AppGroup = 'user' | 'default' | 'system'
+
+export interface AppSummary {
+  id: string
+  name: string
+  kind: 'package' | 'service' | 'container' | 'snap'
+  group: AppGroup
+  summary: string
+  size: number | null
+  running: boolean | null
+  packages: string[]
+  units: string[]
+  ports: number[]
+  sites: string[]
+  updates: number
+  library: boolean
+}
+
+export interface AppDetail extends AppSummary {
+  verdict: { level: 'needed' | 'blocked' | 'caution' | 'safe'; title: string; reasons: string[]; steps: string[] }
+  packageList: { name: string; version: string; size: number; summary: string; manual: boolean; system: boolean }[]
+  removes: string[]
+  freed: number | null
+  neededBy: { name: string; app: string | null }[]
+  unitList: {
+    name: string; description: string; active: string; enabled: string; memory: number | null; since: number | null
+    user: string; command: string; directory: string
+  }[]
+  listeners: Listener[]
+  siteList: { name: string; url: string; how: string }[]
+  folders: { path: string; role: 'program' | 'settings' | 'data' | 'logs' | 'cache'; size: number | null }[]
+  upgrades: { name: string; current: string; next: string; security: boolean }[]
+  held: string[]
+  git: { remote: string; branch: string; commit: string; date: number | null } | null
+  timers: { name: string; next: number | null; last: number | null; result: string }[]
+  container: { image: string; state: string; created: number | null; restart: string; mounts: string[]; project: string | null } | null
 }

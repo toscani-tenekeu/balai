@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import RiskBadge from '@/components/packages/RiskBadge.vue'
+import SortHead from '@/components/SortHead.vue'
+import { useSorting } from '@/composables/useSorting'
 import { CircleCheckIcon, RefreshCwIcon, SearchIcon, TriangleAlertIcon } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
@@ -76,6 +79,7 @@ const shownUpdates = computed(() => {
   return (data.value?.upgrades ?? []).filter((item) => {
     if (updateFilter.value === 'security' && !item.security) return false
     if (updateFilter.value === 'restart' && !sizeOf.value.get(item.name)?.restart) return false
+    if (updateFilter.value === 'risky' && (sizeOf.value.get(item.name)?.risk.level ?? 'safe') === 'safe') return false
     return !term || item.name.toLowerCase().includes(term)
   })
 })
@@ -88,7 +92,22 @@ const matching = computed(() => {
     return !term || item.name.toLowerCase().includes(term) || item.summary.toLowerCase().includes(term)
   })
 })
-const visible = computed(() => matching.value.slice(0, 200))
+const installedSort = useSorting<InstalledPackage>(
+  () => matching.value,
+  { name: (item) => item.name, size: (item) => item.size },
+  { by: 'name', descending: false },
+)
+const visible = computed(() => installedSort.sorted.value.slice(0, 200))
+
+const updateSort = useSorting<PackageState['upgrades'][number]>(
+  () => shownUpdates.value,
+  {
+    name: (item) => item.name,
+    download: (item) => sizeOf.value.get(item.name)?.download,
+    change: (item) => sizeOf.value.get(item.name)?.change,
+  },
+  { by: 'name', descending: false },
+)
 
 async function refreshLists() {
   refreshing.value = true
@@ -253,6 +272,7 @@ onBeforeUnmount(() => clearInterval(timer))
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger v-if="data.tracksSecurity" value="security">Security {{ security }}</TabsTrigger>
                 <TabsTrigger v-if="plan?.restart.length" value="restart">Need a restart {{ plan.restart.length }}</TabsTrigger>
+                <TabsTrigger v-if="plan && plan.blocked + plan.risky" value="risky">Blocked or risky {{ plan.blocked + plan.risky }}</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -262,22 +282,27 @@ onBeforeUnmount(() => clearInterval(timer))
             <Table v-if="data.upgrades.length">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Package</TableHead>
+                  <SortHead label="Package" column="name" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="(column) => updateSort.toggle(column, true)" />
                   <TableHead>Installed</TableHead>
                   <TableHead>Available</TableHead>
                   <TableHead v-if="data.tracksSecurity">Type</TableHead>
-                  <TableHead class="text-right">Download</TableHead>
-                  <TableHead class="text-right">Size change</TableHead>
+                  <TableHead>Risk</TableHead>
+                  <SortHead label="Download" column="download" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
+                  <SortHead label="Size change" column="change" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
                   <TableHead class="w-20"><span class="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow v-for="item in shownUpdates" :key="item.name">
+                <TableRow v-for="item in updateSort.sorted.value" :key="item.name">
                   <TableCell class="font-medium">{{ item.name }}</TableCell>
                   <TableCell class="text-muted-foreground max-w-48 truncate font-mono text-xs">{{ item.current }}</TableCell>
                   <TableCell class="max-w-48 truncate font-mono text-xs">{{ item.next }}</TableCell>
                   <TableCell v-if="data.tracksSecurity">
                     <StatusBadge :tone="item.security ? 'bad' : 'idle'">{{ item.security ? 'Security' : 'Regular' }}</StatusBadge>
+                  </TableCell>
+                  <TableCell>
+                    <RiskBadge v-if="sizeOf.get(item.name)" :risk="sizeOf.get(item.name)!.risk" />
+                    <Skeleton v-else-if="!plan && !planError" class="h-5 w-16" />
                   </TableCell>
                   <TableCell class="text-muted-foreground text-right whitespace-nowrap tabular-nums">
                     <template v-if="sizeOf.get(item.name)?.cached">Downloaded</template>
@@ -299,7 +324,7 @@ onBeforeUnmount(() => clearInterval(timer))
                     </Button>
                   </TableCell>
                 </TableRow>
-                <TableEmpty v-if="!shownUpdates.length" :colspan="8">No update matches.</TableEmpty>
+                <TableEmpty v-if="!shownUpdates.length" :colspan="9">No update matches.</TableEmpty>
               </TableBody>
             </Table>
             <Empty v-else>
@@ -339,9 +364,9 @@ onBeforeUnmount(() => clearInterval(timer))
           <Table v-if="installed">
             <TableHeader>
               <TableRow>
-                <TableHead class="pl-4">Package</TableHead>
+                <SortHead label="Package" column="name" class="pl-4" :sort-by="installedSort.sortBy.value" :descending="installedSort.descending.value" @sort="(column) => installedSort.toggle(column, true)" />
                 <TableHead>Version</TableHead>
-                <TableHead class="text-right">Size</TableHead>
+                <SortHead label="Size" column="size" align="right" :sort-by="installedSort.sortBy.value" :descending="installedSort.descending.value" @sort="installedSort.toggle" />
                 <TableHead class="w-28 pr-4"><span class="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
@@ -381,6 +406,26 @@ onBeforeUnmount(() => clearInterval(timer))
           kept as they are.
         </AlertDialogDescription>
       </AlertDialogHeader>
+      <Alert
+        v-if="onePlan && upgrade?.name && onePlan.packages[0] && onePlan.packages[0].risk.level !== 'safe'"
+        :variant="onePlan.packages[0].risk.level === 'blocked' ? 'destructive' : 'default'"
+      >
+        <TriangleAlertIcon />
+        <AlertTitle>{{ onePlan.packages[0].risk.level === 'blocked' ? 'This update is blocked' : 'Check before updating' }}</AlertTitle>
+        <AlertDescription>
+          <ul class="list-disc pl-4">
+            <li v-for="reason in onePlan.packages[0].risk.reasons" :key="reason">{{ reason }}</li>
+          </ul>
+        </AlertDescription>
+      </Alert>
+      <Alert v-else-if="onePlan && !upgrade?.name && onePlan.blocked + onePlan.risky">
+        <TriangleAlertIcon />
+        <AlertTitle>{{ onePlan.blocked }} blocked, {{ onePlan.risky }} to check first</AlertTitle>
+        <AlertDescription>
+          Blocked updates are left out of "Install all". The ones to check first restart services, change major versions or
+          need a server restart: see the Risk column.
+        </AlertDescription>
+      </Alert>
       <UpdatePlanSummary :plan="onePlan" :error="onePlanError" compact />
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>

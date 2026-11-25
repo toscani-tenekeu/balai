@@ -2,10 +2,9 @@ import { existsSync, lstatSync, readdirSync, rmSync, truncateSync, unlinkSync, w
 import { join } from 'node:path'
 import { getSetting, logActivity, setSetting } from './db.ts'
 import { Cancelled, runningJob, startJob, step } from './jobs.ts'
-import { memory } from './metrics.ts'
 import { releaseSets, webRoots } from './sites.ts'
 import { backend } from './pm.ts'
-import { formatBytes, has, lines, reason, run } from './sys.ts'
+import { formatBytes, has, lines, readText, reason, run } from './sys.ts'
 
 interface Measure {
   bytes: number | null
@@ -76,8 +75,11 @@ function emptyDirs(dirs: string[]) {
 }
 
 /** Regular files under a directory that match, without following links or leaving the filesystem. */
-function findFiles(root: string, match: (path: string, mtime: number) => boolean): { path: string; size: number }[] {
-  const found: { path: string; size: number }[] = []
+function findFiles(
+  root: string,
+  match: (path: string, mtime: number) => boolean,
+): { path: string; size: number; links: number }[] {
+  const found: { path: string; size: number; links: number }[] = []
   let device: number
   try {
     device = lstatSync(root).dev
@@ -100,7 +102,7 @@ function findFiles(root: string, match: (path: string, mtime: number) => boolean
         if (stat.dev !== device) continue
         if (stat.isDirectory()) stack.push(path)
         else if (stat.isFile() && match(path, Math.max(stat.mtimeMs, stat.atimeMs))) {
-          found.push({ path, size: stat.blocks * 512 })
+          found.push({ path, size: stat.blocks * 512, links: stat.nlink })
         }
       } catch {
         // Gone between listing and reading.
@@ -191,10 +193,47 @@ async function stoppedContainers(): Promise<string[]> {
   return lines(result.stdout)
 }
 
+/**
+ * Images no container uses, measured from the images and containers themselves. `docker system df`
+ * cannot be trusted here: with the containerd image store it calls every image reclaimable, even
+ * those running containers use, so the size shown never went down after cleaning.
+ */
 async function unusedImages(): Promise<number> {
-  const result = await run(['docker', 'system', 'df', '--format', '{{.Type}}\t{{.Reclaimable}}'])
-  const images = lines(result.stdout).find((line) => line.startsWith('Images'))
-  return images ? parseSize(images.split('\t')[1] ?? '') : 0
+  const listed = await run(['docker', 'image', 'ls', '-aq', '--no-trunc'])
+  const ids = [...new Set(lines(listed.stdout))]
+  if (!ids.length) return 0
+  const containers = lines((await run(['docker', 'ps', '-aq'])).stdout)
+  const used = new Set(
+    containers.length ? lines((await run(['docker', 'inspect', '--format', '{{.Image}}', ...containers])).stdout) : [],
+  )
+  const unused = ids.filter((id) => !used.has(id))
+  if (!unused.length) return 0
+  const sizes = await run(['docker', 'image', 'inspect', '--format', '{{.Size}}', ...unused], { timeout: 60_000 })
+  return lines(sizes.stdout).reduce((total, size) => total + (Number(size) || 0), 0)
+}
+
+/** Memory the kernel can really give back: cached file data no program has mapped, plus reclaimable kernel caches. */
+export function droppableCache(): number {
+  const info = new Map<string, number>()
+  for (const line of lines(readText('/proc/meminfo'))) {
+    const match = line.match(/^([\w()]+):\s+(\d+)/)
+    if (match) info.set(match[1]!, Number(match[2]) * 1024)
+  }
+  const file = (info.get('Active(file)') ?? 0) + (info.get('Inactive(file)') ?? 0)
+  const pinned = (info.get('Mapped') ?? 0) + (info.get('Dirty') ?? 0) + (info.get('Writeback') ?? 0)
+  return Math.max(0, file - pinned) + (info.get('SReclaimable') ?? 0)
+}
+
+/**
+ * Space that emptying the folders really frees. A file also linked from elsewhere (Bun links its cache into
+ * each project's node_modules) keeps its space until every link is gone, so it is not counted.
+ */
+function freeableSize(dirs: string[]): number {
+  let total = 0
+  for (const dir of existing(dirs)) {
+    for (const file of findFiles(dir, () => true)) if (file.links === 1) total += file.size
+  }
+  return total
 }
 
 const count = (items: unknown[], word: string) => `${items.length} ${word}${items.length === 1 ? '' : 's'}`
@@ -371,7 +410,9 @@ const tasks: Task[] = [
     measure: async () => ({ bytes: await unusedImages() }),
     clean: async () => {
       const result = await run(['docker', 'image', 'prune', '-a', '-f'], { timeout: 600_000 })
-      return { ok: result.ok, message: result.ok ? undefined : reason(result, 'docker prune failed.') }
+      if (!result.ok) return { ok: false, message: reason(result, 'docker prune failed.') }
+      const left = await unusedImages()
+      return left ? { ok: false, message: `${formatBytes(left)} of images could not be removed.` } : { ok: true }
     },
   },
   {
@@ -415,8 +456,9 @@ const tasks: Task[] = [
       'Downloads kept by npm, Bun, pip, Yarn, pnpm, Composer, Go, Cargo and Gradle. The next install or build fetches what it needs again.',
     recommended: false,
     kind: 'disk',
-    measure: async () => ({ bytes: await contentSize(toolCaches()) }),
+    measure: async () => ({ bytes: freeableSize(toolCaches()) }),
     clean: async () => {
+      // A build running at the same time (npm ci, bun install) may start filling a cache again at once; that is expected.
       emptyDirs(toolCaches())
       return { ok: true }
     },
@@ -460,7 +502,7 @@ const tasks: Task[] = [
       'Asks the kernel to drop cached file data from memory. Linux frees this on its own when needed, so this is rarely useful and disk reads are slower for a while afterwards.',
     recommended: false,
     kind: 'memory',
-    measure: async () => ({ bytes: memory().cached, note: 'memory' }),
+    measure: async () => ({ bytes: droppableCache(), note: 'memory' }),
     clean: async () => {
       await run(['sync'], { timeout: 60_000 })
       try {
@@ -529,7 +571,8 @@ export function startCleanup(ids: string[], automatic = false) {
         const freed =
           task.kind === 'disk' && before.bytes !== null && after.bytes !== null ? Math.max(0, before.bytes - after.bytes) : 0
         const item = handle.job.steps[index]!
-        if (outcome.ok) item.detail = task.kind === 'disk' ? `${formatBytes(freed)} freed` : null
+        const released = task.kind === 'memory' && before.bytes !== null && after.bytes !== null ? Math.max(0, before.bytes - after.bytes) : 0
+        if (outcome.ok) item.detail = task.kind === 'disk' ? `${formatBytes(freed)} freed` : `${formatBytes(released)} of memory released`
         handle.job.done = index + 1
         logActivity({
           area: 'cleanup',
@@ -540,7 +583,7 @@ export function startCleanup(ids: string[], automatic = false) {
           freed,
         })
         if (!outcome.ok) handle.job.errors.push(`${task.title}: ${outcome.message ?? 'failed'}`)
-        results.push({ id: task.id, title: task.title, ok: outcome.ok, message: outcome.message ?? null, freed })
+        results.push({ id: task.id, title: task.title, ok: outcome.ok, message: outcome.message ?? null, freed, released })
       }
       const freed = results.reduce((total, result) => total + result.freed, 0)
       return { message: `Cleanup finished, ${formatBytes(freed)} freed.`, result: { results, freed } }

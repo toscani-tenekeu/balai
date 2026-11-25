@@ -4,6 +4,7 @@ import { whenSignedOut } from '@/lib/api'
 
 export const pages = [
   { path: '/', name: 'Overview', component: () => import('@/pages/Overview.vue') },
+  { path: '/apps', name: 'Apps', component: () => import('@/pages/Apps.vue') },
   { path: '/processes', name: 'Processes', component: () => import('@/pages/Processes.vue') },
   { path: '/services', name: 'Services', component: () => import('@/pages/Services.vue') },
   { path: '/cleanup', name: 'Cleanup', component: () => import('@/pages/Cleanup.vue') },

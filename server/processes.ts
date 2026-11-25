@@ -1,4 +1,5 @@
 import { logActivity } from './db.ts'
+import { originOf } from './hints.ts'
 import { lines, readText, run } from './sys.ts'
 
 export interface ProcessInfo {
@@ -12,6 +13,10 @@ export interface ProcessInfo {
   elapsed: number
   name: string
   command: string
+  /** The service it belongs to; null for processes started by hand or by the kernel. */
+  unit: string | null
+  /** Started from a login session (SSH, console) rather than by a service. */
+  session: boolean
 }
 
 export async function listProcesses(): Promise<ProcessInfo[]> {
@@ -37,6 +42,7 @@ export async function listProcesses(): Promise<ProcessInfo[]> {
       elapsed: Number(match[8]),
       name: readText(`/proc/${pid}/comm`).trim() || command.split(' ')[0]!,
       command,
+      ...originOf(pid),
     })
   }
   return list
