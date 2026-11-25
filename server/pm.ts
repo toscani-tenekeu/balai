@@ -341,10 +341,11 @@ function dnfLike(id: 'dnf' | 'yum'): Backend {
     async sizes(upgrades) {
       const sizes = new Map<string, UpgradeSize>()
       if (!upgrades.length || !has('dnf')) return sizes
-      const format = isDnf5() ? '%{name}\\t%{download_size}\\t%{install_size}\\n' : '%{name}\\t%{downloadsize}\\t%{installsize}'
+      // dnf5 needs the line end written out and does not read \\t, so the fields are split by spaces.
+      const format = `%{name} %{downloadsize} %{installsize}${isDnf5() ? '\\n' : ''}`
       const result = await run(['dnf', '-q', 'repoquery', '--upgrades', '--latest-limit', '1', '--queryformat', format], { timeout: 180_000 })
       for (const line of lines(result.stdout)) {
-        const [name, download, installed] = line.split('\t')
+        const [name, download, installed] = line.split(/\s+/)
         if (name && !sizes.has(name)) sizes.set(name, { download: Number(download) || null, installed: Number(installed) || null, cached: false })
       }
       return sizes
