@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SortHead from '@/components/SortHead.vue'
+import { useSorting } from '@/composables/useSorting'
 import { SearchIcon, SquareIcon, ZapIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
@@ -21,17 +23,27 @@ import type { ActionResult, ProcessInfo } from '@/lib/types'
 
 const { data, error, refresh } = useResource<ProcessInfo[]>('/processes', 5000)
 const search = ref('')
-const sort = ref('cpu')
 const pending = ref<{ process: ProcessInfo; action: 'stop' | 'kill' } | null>(null)
 
-const visible = computed(() => {
+const filtered = computed(() => {
   const term = search.value.trim().toLowerCase()
-  const list = (data.value ?? []).filter(
+  return (data.value ?? []).filter(
     (item) => !term || item.command.toLowerCase().includes(term) || item.user.includes(term) || String(item.pid) === term,
   )
-  const key = sort.value === 'memory' ? 'rss' : 'cpu'
-  return [...list].sort((a, b) => b[key] - a[key]).slice(0, 100)
 })
+const { sortBy, descending, sorted, toggle } = useSorting<ProcessInfo>(
+  () => filtered.value,
+  {
+    name: (item) => item.name,
+    pid: (item) => item.pid,
+    user: (item) => item.user,
+    cpu: (item) => item.cpu,
+    memory: (item) => item.rss,
+    elapsed: (item) => item.elapsed,
+  },
+  { by: 'cpu', descending: true },
+)
+const visible = computed(() => sorted.value.slice(0, 100))
 
 async function confirm() {
   const target = pending.value
@@ -55,15 +67,6 @@ async function confirm() {
       <SearchIcon class="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
       <Input v-model="search" class="pl-8" placeholder="Filter by name, user or PID" aria-label="Filter processes" />
     </div>
-    <Select v-model="sort">
-      <SelectTrigger class="w-44" aria-label="Sort by">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="cpu">Highest CPU first</SelectItem>
-        <SelectItem value="memory">Most memory first</SelectItem>
-      </SelectContent>
-    </Select>
     <p v-if="data" class="text-muted-foreground ml-auto text-sm">{{ data.length }} running</p>
   </div>
 
@@ -72,12 +75,12 @@ async function confirm() {
       <Table v-if="data">
         <TableHeader>
           <TableRow>
-            <TableHead class="pl-4">Process</TableHead>
-            <TableHead>PID</TableHead>
-            <TableHead>User</TableHead>
-            <TableHead class="text-right">CPU</TableHead>
-            <TableHead class="text-right">Memory</TableHead>
-            <TableHead class="text-right">Running</TableHead>
+            <SortHead label="Process" column="name" class="pl-4" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
+            <SortHead label="PID" column="pid" :sort-by="sortBy" :descending="descending" @sort="toggle" />
+            <SortHead label="User" column="user" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
+            <SortHead label="CPU" column="cpu" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
+            <SortHead label="Memory" column="memory" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
+            <SortHead label="Running" column="elapsed" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
             <TableHead class="w-20 pr-4 text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>

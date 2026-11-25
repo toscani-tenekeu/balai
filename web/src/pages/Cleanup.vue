@@ -16,6 +16,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { Progress } from '@/components/ui/progress'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cancel, jobResult, jobs, startPolling, track } from '@/composables/useJobs'
 import { useResource } from '@/composables/useResource'
 import { messageOf, post } from '@/lib/api'
@@ -72,6 +73,18 @@ watch(data, (items) => {
 })
 
 const chosen = computed(() => (data.value ?? []).filter((item) => selected.value[item.id]))
+
+// Suggested order, or by size; items whose size is not a number of bytes go last.
+const order = ref('suggested')
+const ordered = computed(() => {
+  const list = [...(data.value ?? [])]
+  if (order.value === 'suggested') return list
+  const direction = order.value === 'largest' ? -1 : 1
+  return list.sort((a, b) => {
+    if (a.bytes === null || b.bytes === null) return a.bytes === null ? (b.bytes === null ? 0 : 1) : -1
+    return (a.bytes - b.bytes) * direction
+  })
+})
 const total = computed(() =>
   chosen.value.reduce((sum, item) => sum + (item.kind === 'disk' && item.id !== 'journal' ? item.bytes ?? 0 : 0), 0),
 )
@@ -131,7 +144,8 @@ async function run() {
     <AlertDescription>
       <ul>
         <li v-for="entry in result.outcome.results" :key="entry.id">
-          {{ entry.title }}: {{ entry.ok ? (entry.freed ? bytes(entry.freed) : 'done') : entry.message }}
+          {{ entry.title }}:
+          {{ entry.ok ? (entry.freed ? bytes(entry.freed) : entry.released ? `${bytes(entry.released)} of memory released` : 'done') : entry.message }}
         </li>
       </ul>
     </AlertDescription>
@@ -148,7 +162,17 @@ async function run() {
       <CardDescription>
         Items that are always safe to remove are ticked for you. The others are explained and left for you to decide.
       </CardDescription>
-      <CardAction>
+      <CardAction class="flex gap-2">
+        <Select v-model="order">
+          <SelectTrigger size="sm" class="w-40" aria-label="Order">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="suggested">Suggested order</SelectItem>
+            <SelectItem value="largest">Largest first</SelectItem>
+            <SelectItem value="smallest">Smallest first</SelectItem>
+          </SelectContent>
+        </Select>
         <Button variant="outline" size="sm" :disabled="loading || running" @click="refresh">
           <RefreshCwIcon data-icon="inline-start" />
           Measure again
@@ -157,7 +181,7 @@ async function run() {
     </CardHeader>
     <CardContent>
       <FieldGroup v-if="data" class="gap-0 divide-y">
-        <Field v-for="item in data" :key="item.id" orientation="horizontal" class="py-3 first:pt-0 last:pb-0">
+        <Field v-for="item in ordered" :key="item.id" orientation="horizontal" class="py-3 first:pt-0 last:pb-0">
           <Checkbox :id="`clean-${item.id}`" v-model="selected[item.id]" :disabled="running" />
           <FieldContent>
             <FieldLabel :for="`clean-${item.id}`">{{ item.title }}</FieldLabel>

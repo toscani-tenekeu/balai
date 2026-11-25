@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SortHead from '@/components/SortHead.vue'
+import { useSorting } from '@/composables/useSorting'
 import { track } from '@/composables/useJobs'
 import { FileIcon, FolderIcon, Trash2Icon } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
@@ -44,7 +46,12 @@ const crumbs = computed(() => {
   const parts = path.value.split('/').filter(Boolean)
   return parts.map((name, index) => ({ name, path: `/${parts.slice(0, index + 1).join('/')}` }))
 })
-const largest = computed(() => usage.value?.entries[0]?.size || 1)
+const largest = computed(() => Math.max(1, ...(usage.value?.entries ?? []).map((entry) => entry.size)))
+const { sortBy, descending, sorted, toggle } = useSorting<Entry>(
+  () => usage.value?.entries ?? [],
+  { name: (entry) => entry.name, size: (entry) => entry.size },
+  { by: 'size', descending: true },
+)
 
 const pending = ref<Entry | null>(null)
 const deleting = ref('')
@@ -140,14 +147,14 @@ async function remove() {
       <Table v-if="usage && !usageError">
         <TableHeader>
           <TableRow>
-            <TableHead>Name</TableHead>
+            <SortHead label="Name" column="name" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
             <TableHead class="w-1/3">Share</TableHead>
-            <TableHead class="text-right">Size</TableHead>
+            <SortHead label="Size" column="size" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
             <TableHead class="w-10"><span class="sr-only">Actions</span></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody :class="loading ? 'opacity-50' : ''">
-          <TableRow v-for="entry in usage.entries" :key="entry.path">
+          <TableRow v-for="entry in sorted" :key="entry.path">
             <TableCell class="max-w-80">
               <Button v-if="entry.directory" variant="link" class="h-auto max-w-full justify-start p-0" @click="open(entry.path)">
                 <FolderIcon data-icon="inline-start" />

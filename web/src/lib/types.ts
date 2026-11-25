@@ -78,7 +78,7 @@ export interface CleanupResult {
   ok: boolean
   message: string
   freed: number
-  results: { id: string; title: string; ok: boolean; message: string | null; freed: number }[]
+  results: { id: string; title: string; ok: boolean; message: string | null; freed: number; released?: number }[]
 }
 
 export interface DiskUsage {

@@ -27,9 +27,9 @@ export const sections: Section[] = [
   {
     id: 'storage', label: 'Storage', icon: HardDriveIcon,
     tabs: [
-      { to: '/disk', label: 'Disk', icon: HardDriveIcon },
       { to: '/files', label: 'Files', icon: FileSearchIcon },
       { to: '/cleanup', label: 'Cleanup', icon: Trash2Icon },
+      { to: '/disk', label: 'Disk', icon: HardDriveIcon },
     ],
   },
   {

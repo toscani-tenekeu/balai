@@ -1,3 +1,5 @@
+import { reportRequest } from '@/composables/useConnection'
+
 export class ApiError extends Error {
   status: number
   constructor(message: string, status: number) {
@@ -22,8 +24,11 @@ export async function api<T>(path: string, options: { method?: string; body?: un
       credentials: 'same-origin',
     })
   } catch {
+    reportRequest(false)
     throw new ApiError('The server is not responding.', 0)
   }
+  // A proxy in front of the panel answers 502 to 504 while the panel itself is down.
+  reportRequest(![502, 503, 504].includes(response.status))
 
   const data = await response.json().catch(() => null)
   if (!response.ok) {

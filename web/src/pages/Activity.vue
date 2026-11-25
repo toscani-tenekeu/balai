@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import LoadError from '@/components/LoadError.vue'
+import SortHead from '@/components/SortHead.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useResource } from '@/composables/useResource'
+import { useSorting } from '@/composables/useSorting'
 import { bytes, dateTime } from '@/lib/format'
 import type { ActivityRow } from '@/lib/types'
 
 const { data, error } = useResource<{ rows: ActivityRow[]; freed: number }>('/activity')
+const { sortBy, descending, sorted, toggle } = useSorting<ActivityRow>(
+  () => data.value?.rows ?? [],
+  { at: (row) => row.at, action: (row) => row.action, freed: (row) => row.freed },
+  { by: 'at', descending: true },
+)
 </script>
 
 <template>
@@ -26,15 +33,15 @@ const { data, error } = useResource<{ rows: ActivityRow[]; freed: number }>('/ac
       <Table v-if="data">
         <TableHeader>
           <TableRow>
-            <TableHead>When</TableHead>
-            <TableHead>Action</TableHead>
+            <SortHead label="When" column="at" :sort-by="sortBy" :descending="descending" @sort="toggle" />
+            <SortHead label="Action" column="action" :sort-by="sortBy" :descending="descending" @sort="(column) => toggle(column, true)" />
             <TableHead>Target</TableHead>
-            <TableHead class="text-right">Freed</TableHead>
+            <SortHead label="Freed" column="freed" align="right" :sort-by="sortBy" :descending="descending" @sort="toggle" />
             <TableHead class="text-right">Result</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow v-for="row in data.rows" :key="row.id">
+          <TableRow v-for="row in sorted" :key="row.id">
             <TableCell class="text-muted-foreground whitespace-nowrap">{{ dateTime(row.at) }}</TableCell>
             <TableCell class="font-medium">{{ row.action }}</TableCell>
             <TableCell class="max-w-80">

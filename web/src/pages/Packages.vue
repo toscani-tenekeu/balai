@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SortHead from '@/components/SortHead.vue'
+import { useSorting } from '@/composables/useSorting'
 import { CircleCheckIcon, RefreshCwIcon, SearchIcon, TriangleAlertIcon } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
@@ -88,7 +90,22 @@ const matching = computed(() => {
     return !term || item.name.toLowerCase().includes(term) || item.summary.toLowerCase().includes(term)
   })
 })
-const visible = computed(() => matching.value.slice(0, 200))
+const installedSort = useSorting<InstalledPackage>(
+  () => matching.value,
+  { name: (item) => item.name, size: (item) => item.size },
+  { by: 'name', descending: false },
+)
+const visible = computed(() => installedSort.sorted.value.slice(0, 200))
+
+const updateSort = useSorting<PackageState['upgrades'][number]>(
+  () => shownUpdates.value,
+  {
+    name: (item) => item.name,
+    download: (item) => sizeOf.value.get(item.name)?.download,
+    change: (item) => sizeOf.value.get(item.name)?.change,
+  },
+  { by: 'name', descending: false },
+)
 
 async function refreshLists() {
   refreshing.value = true
@@ -262,17 +279,17 @@ onBeforeUnmount(() => clearInterval(timer))
             <Table v-if="data.upgrades.length">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Package</TableHead>
+                  <SortHead label="Package" column="name" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="(column) => updateSort.toggle(column, true)" />
                   <TableHead>Installed</TableHead>
                   <TableHead>Available</TableHead>
                   <TableHead v-if="data.tracksSecurity">Type</TableHead>
-                  <TableHead class="text-right">Download</TableHead>
-                  <TableHead class="text-right">Size change</TableHead>
+                  <SortHead label="Download" column="download" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
+                  <SortHead label="Size change" column="change" align="right" :sort-by="updateSort.sortBy.value" :descending="updateSort.descending.value" @sort="updateSort.toggle" />
                   <TableHead class="w-20"><span class="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow v-for="item in shownUpdates" :key="item.name">
+                <TableRow v-for="item in updateSort.sorted.value" :key="item.name">
                   <TableCell class="font-medium">{{ item.name }}</TableCell>
                   <TableCell class="text-muted-foreground max-w-48 truncate font-mono text-xs">{{ item.current }}</TableCell>
                   <TableCell class="max-w-48 truncate font-mono text-xs">{{ item.next }}</TableCell>
@@ -339,9 +356,9 @@ onBeforeUnmount(() => clearInterval(timer))
           <Table v-if="installed">
             <TableHeader>
               <TableRow>
-                <TableHead class="pl-4">Package</TableHead>
+                <SortHead label="Package" column="name" class="pl-4" :sort-by="installedSort.sortBy.value" :descending="installedSort.descending.value" @sort="(column) => installedSort.toggle(column, true)" />
                 <TableHead>Version</TableHead>
-                <TableHead class="text-right">Size</TableHead>
+                <SortHead label="Size" column="size" align="right" :sort-by="installedSort.sortBy.value" :descending="installedSort.descending.value" @sort="installedSort.toggle" />
                 <TableHead class="w-28 pr-4"><span class="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
