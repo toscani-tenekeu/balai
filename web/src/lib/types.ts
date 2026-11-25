@@ -159,7 +159,7 @@ export interface RemovalPlan {
 }
 
 export interface PackageJob {
-  id: number
+  id: string
   title: string
   running: boolean
   ok: boolean | null
@@ -196,4 +196,95 @@ export interface CleanupSchedule {
   enabled: boolean
   lastRun: number | null
   nextRun: number | null
+}
+
+export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
+
+export interface JobStep {
+  title: string
+  state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped'
+  detail: string | null
+  startedAt?: number
+  finishedAt?: number
+}
+
+export interface Job {
+  id: string
+  kind: 'search' | 'usage' | 'cleanup' | 'delete' | 'packages' | 'update'
+  title: string
+  state: JobState
+  cancellable: boolean
+  keep: string | null
+  done: number
+  total: number
+  unit: 'bytes' | 'items' | 'files' | null
+  now: string | null
+  steps: JobStep[]
+  output: string[]
+  message: string | null
+  errors: string[]
+  startedAt: number
+  finishedAt: number | null
+  link: string | null
+}
+
+export interface Started {
+  ok: boolean
+  job: Job
+}
+
+export type Use = 'used' | 'maybe' | 'unused'
+
+export interface FileUse {
+  path: string
+  use: Use
+  label: string
+  reasons: string[]
+  site: { name: string; url: string } | null
+  release: { site: string; current: string; previous: boolean } | null
+  project: { root: string; git: 'tracked' | 'untracked' | 'ignored' | null } | null
+  references: { file: string; line: number }[]
+  referenceCount: number
+  requests: { count: number; last: number | null; since: number | null } | null
+  openBy: string[]
+  copyOf: string | null
+}
+
+export interface CleanupOutcome {
+  results: CleanupResult['results']
+  freed: number
+}
+
+export interface PlanPackage {
+  name: string
+  download: number | null
+  change: number | null
+  cached: boolean
+  restart: boolean
+}
+
+export interface DiskImpact {
+  mount: string
+  free: number
+  size: number
+  after: number
+  during: number
+  uses: string[]
+}
+
+export interface UpdatePlan {
+  ok: true
+  name: string | null
+  count: number
+  packages: PlanPackage[]
+  download: number
+  cachedBytes: number
+  change: number
+  unknown: number
+  disks: DiskImpact[]
+  seconds: number
+  learnedFrom: number
+  restart: string[]
+  keptBack: string[]
+  warnings: string[]
 }

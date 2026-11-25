@@ -1,9 +1,11 @@
 import { existsSync, lstatSync, readdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSetting, logActivity, setSetting } from './db.ts'
+import { Cancelled, runningJob, startJob, step } from './jobs.ts'
 import { memory } from './metrics.ts'
+import { releaseSets, webRoots } from './sites.ts'
 import { backend } from './pm.ts'
-import { has, lines, reason, run } from './sys.ts'
+import { formatBytes, has, lines, reason, run } from './sys.ts'
 
 interface Measure {
   bytes: number | null
@@ -20,6 +22,11 @@ interface Task {
   available?: () => boolean
   measure: () => Promise<Measure>
   clean: () => Promise<{ ok: boolean; message?: string }>
+}
+
+/** Releases older than the live one and the one before it, on sites deployed as side-by-side releases. */
+async function oldReleases(): Promise<{ site: string; dir: string }[]> {
+  return releaseSets(await webRoots()).flatMap((set) => set.others.slice(1).map((dir) => ({ site: set.site, dir })))
 }
 
 const DAY = 86_400_000
@@ -428,6 +435,25 @@ const tasks: Task[] = [
     },
   },
   {
+    id: 'old-releases',
+    title: 'Old website releases',
+    description:
+      'Earlier releases of sites deployed side by side (releases/…, with a "current" link). The live release and the one before it, kept for going back, stay.',
+    recommended: false,
+    kind: 'disk',
+    measure: async () => {
+      const old = await oldReleases()
+      return { bytes: await sizeOf(old.map((item) => item.dir)), note: old.length ? `${old.length} on ${[...new Set(old.map((item) => item.site))].join(', ')}` : undefined }
+    },
+    clean: async () => {
+      for (const item of await oldReleases()) {
+        const result = await run(['rm', '-rf', '--one-file-system', '--', item.dir], { timeout: 600_000 })
+        if (!result.ok) return { ok: false, message: reason(result, `${item.dir} could not be deleted.`) }
+      }
+      return { ok: true }
+    },
+  },
+  {
     id: 'page-cache',
     title: 'Memory page cache',
     description:
@@ -466,45 +492,61 @@ export async function listCleanup() {
   )
 }
 
-let running = false
+/** Cleans the chosen items one after the other, as a task the interface follows and can cancel. */
+export function startCleanup(ids: string[], automatic = false) {
+  const running = runningJob('cleanup')
+  if (running) return { ok: false as const, message: 'A cleanup is already running.', job: running }
+  const chosen = active().filter((candidate) => ids.includes(candidate.id))
+  if (!chosen.length) return { ok: false as const, message: 'Nothing selected.', job: null }
 
-export async function runCleanup(ids: string[]) {
-  if (running) return { ok: false, message: 'A cleanup is already running.', results: [], freed: 0 }
-  running = true
-  try {
-    const results = []
-    for (const task of active().filter((candidate) => ids.includes(candidate.id))) {
-      const before = await task.measure()
-      let outcome: { ok: boolean; message?: string }
-      try {
-        outcome = await task.clean()
-      } catch (error) {
-        outcome = { ok: false, message: error instanceof Error ? error.message : 'Cleanup failed.' }
+  const job = startJob(
+    {
+      kind: 'cleanup',
+      title: automatic ? 'Weekly cleanup' : chosen.length === 1 ? `Cleaning ${chosen[0]!.title.toLowerCase()}` : `Cleaning ${chosen.length} items`,
+      link: '/cleanup',
+      unit: 'items',
+      total: chosen.length,
+      steps: chosen.map((task) => ({ title: task.title, state: 'waiting' as const, detail: null })),
+    },
+    async (handle) => {
+      const results = []
+      for (const [index, task] of chosen.entries()) {
+        let before: Measure = { bytes: null }
+        let outcome: { ok: boolean; message?: string }
+        try {
+          outcome = await step(handle, index, async () => {
+            before = await task.measure()
+            handle.check()
+            const done = await task.clean()
+            if (!done.ok) throw new Error(done.message ?? 'Cleanup failed.')
+            return done
+          })
+        } catch (error) {
+          if (error instanceof Cancelled || handle.cancelled) throw error
+          outcome = { ok: false, message: error instanceof Error ? error.message : 'Cleanup failed.' }
+        }
+        const after = await task.measure()
+        const freed =
+          task.kind === 'disk' && before.bytes !== null && after.bytes !== null ? Math.max(0, before.bytes - after.bytes) : 0
+        const item = handle.job.steps[index]!
+        if (outcome.ok) item.detail = task.kind === 'disk' ? `${formatBytes(freed)} freed` : null
+        handle.job.done = index + 1
+        logActivity({
+          area: 'cleanup',
+          action: outcome.ok ? (automatic ? 'Cleaned automatically' : 'Cleaned') : 'Cleanup failed',
+          target: task.title,
+          detail: outcome.message ?? '',
+          ok: outcome.ok,
+          freed,
+        })
+        if (!outcome.ok) handle.job.errors.push(`${task.title}: ${outcome.message ?? 'failed'}`)
+        results.push({ id: task.id, title: task.title, ok: outcome.ok, message: outcome.message ?? null, freed })
       }
-      const after = await task.measure()
-      const freed =
-        task.kind === 'disk' && before.bytes !== null && after.bytes !== null
-          ? Math.max(0, before.bytes - after.bytes)
-          : 0
-      logActivity({
-        area: 'cleanup',
-        action: outcome.ok ? 'Cleaned' : 'Cleanup failed',
-        target: task.title,
-        detail: outcome.message ?? '',
-        ok: outcome.ok,
-        freed,
-      })
-      results.push({ id: task.id, title: task.title, ok: outcome.ok, message: outcome.message ?? null, freed })
-    }
-    return {
-      ok: results.every((result) => result.ok),
-      message: '',
-      results,
-      freed: results.reduce((total, result) => total + result.freed, 0),
-    }
-  } finally {
-    running = false
-  }
+      const freed = results.reduce((total, result) => total + result.freed, 0)
+      return { message: `Cleanup finished, ${formatBytes(freed)} freed.`, result: { results, freed } }
+    },
+  )
+  return { ok: true as const, message: '', job }
 }
 
 const WEEK = 7 * DAY
@@ -526,7 +568,7 @@ async function scheduled() {
   if (!enabled || !nextRun || Date.now() < nextRun) return
   setSetting('auto_clean_at', String(Date.now()))
   setSetting('auto_clean_ran', String(Date.now()))
-  await runCleanup(tasks.filter((task) => task.recommended).map((task) => task.id))
+  startCleanup(tasks.filter((task) => task.recommended).map((task) => task.id), true)
 }
 
 /** Once a week, cleans the items that are always safe to remove. */

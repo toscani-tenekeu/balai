@@ -3,6 +3,7 @@ import { useColorMode } from '@vueuse/core'
 import { BrushCleaningIcon, LogOutIcon, MoonIcon, SettingsIcon, SunIcon } from '@lucide/vue'
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import TasksMenu from '@/components/tasks/TasksMenu.vue'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -99,10 +100,11 @@ onMounted(loadUpdateState)
         <SidebarTrigger class="-ml-1" />
         <Separator orientation="vertical" class="mr-2 h-4! self-center!" />
         <h1 class="text-sm font-medium">{{ section?.label ?? route.name }}</h1>
+        <div class="flex-1" />
+        <TasksMenu />
         <Button
           variant="ghost"
           size="icon"
-          class="ml-auto"
           :aria-label="mode === 'dark' ? 'Use light theme' : 'Use dark theme'"
           @click="mode = mode === 'dark' ? 'light' : 'dark'"
         >

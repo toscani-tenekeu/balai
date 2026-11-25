@@ -1,6 +1,8 @@
-import { logActivity } from './db.ts'
-import { backend, type InstalledPackage, type Upgrade } from './pm.ts'
-import { reason } from './sys.ts'
+import { getSetting, logActivity, setSetting } from './db.ts'
+import { filesystems } from './metrics.ts'
+import { backend, type InstalledPackage, type Upgrade, type UpgradeSize } from './pm.ts'
+import { getJob, runningJob, startJob } from './jobs.ts'
+import { eachLine, formatBytes, reason, spawn } from './sys.ts'
 
 export type { InstalledPackage, Upgrade } from './pm.ts'
 
@@ -98,7 +100,7 @@ export async function removalPlan(name: string) {
 }
 
 export interface Job {
-  id: number
+  id: string
   title: string
   running: boolean
   ok: boolean | null
@@ -107,74 +109,84 @@ export interface Job {
   finishedAt: number | null
 }
 
-let job: Job | null = null
-let jobs = 0
+let last: string | null = null
 
-export const packageJob = () => job
-export const packageJobRunning = () => job?.running === true
+/** The latest package task, in the shape the Packages page reads. */
+export function packageJob(): Job | null {
+  const found = last ? getJob(last)?.job : null
+  if (!found) return null
+  return {
+    id: found.id,
+    title: found.title,
+    running: found.state === 'running',
+    ok: found.state === 'running' ? null : found.state === 'done',
+    output: found.output,
+    startedAt: found.startedAt,
+    finishedAt: found.finishedAt,
+  }
+}
+
+export const packageJobRunning = () => runningJob('packages') !== null
 
 /** dpkg's percentage counter, which would fill the output with noise. */
 const PROGRESS = /^\(Reading database \.\.\. \d*%?$/
 
-async function collect(stream: ReadableStream<Uint8Array>, output: string[]) {
-  const decoder = new TextDecoder()
-  let rest = ''
-  for await (const chunk of stream) {
-    const parts = (rest + decoder.decode(chunk, { stream: true })).split(/\r?\n|\r/)
-    rest = parts.pop() ?? ''
-    for (const part of parts) if (part.trim() && !PROGRESS.test(part)) output.push(part)
-    if (output.length > 400) output.splice(0, output.length - 400)
-  }
-  if (rest.trim()) output.push(rest)
-}
-
-/** Package work can take minutes, so it runs in the background and the interface follows its output. */
-function start(title: string, cmd: string[], entry: { action: string; target?: string }): { ok: boolean; message: string } {
-  if (job?.running) return { ok: false, message: 'Another package operation is still running.' }
-  const current: Job = { id: ++jobs, title, running: true, ok: null, output: [], startedAt: Date.now(), finishedAt: null }
-  job = current
-
-  void (async () => {
-    let ok = false
-    try {
-      const proc = Bun.spawn(cmd, {
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        timeout: 1_800_000,
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...backend?.env },
+/** Package work can take minutes, so it runs as a task and the interface follows its output. */
+function start(
+  title: string,
+  cmd: string[],
+  entry: { action: string; target?: string },
+  estimate: number | null = null,
+): { ok: boolean; message: string } {
+  if (packageJobRunning()) return { ok: false, message: 'Another package operation is still running.' }
+  const job = startJob(
+    {
+      kind: 'packages',
+      title,
+      link: '/packages',
+      cancellable: false,
+      keep: 'Stopping the package manager halfway can leave packages half installed, so this task runs to the end.',
+    },
+    async (handle) => {
+      let ok = false
+      try {
+        const proc = spawn(cmd, { timeout: 1_800_000, env: backend?.env })
+        const keep = (line: string) => {
+          if (PROGRESS.test(line)) return
+          handle.log(line)
+          handle.job.now = line.slice(0, 200)
+        }
+        const [, , code] = await Promise.all([eachLine(proc.stdout, keep), eachLine(proc.stderr, keep), proc.exited])
+        ok = code === 0
+      } catch (error) {
+        handle.log(error instanceof Error ? error.message : String(error))
+      }
+      cache = null
+      planCache = null
+      if (ok && estimate) learn(estimate / learned().factor, (Date.now() - handle.job.startedAt) / 1000)
+      logActivity({
+        area: 'packages',
+        action: ok ? entry.action : `${entry.action}: failed`,
+        target: entry.target,
+        detail: ok ? '' : handle.job.output.slice(-8).join('\n'),
+        ok,
       })
-      const [, , code] = await Promise.all([
-        collect(proc.stdout, current.output),
-        collect(proc.stderr, current.output),
-        proc.exited,
-      ])
-      ok = code === 0
-    } catch (error) {
-      current.output.push(error instanceof Error ? error.message : String(error))
-    }
-    current.running = false
-    current.ok = ok
-    current.finishedAt = Date.now()
-    cache = null
-    logActivity({
-      area: 'packages',
-      action: ok ? entry.action : `${entry.action}: failed`,
-      target: entry.target,
-      detail: ok ? '' : current.output.slice(-8).join('\n'),
-      ok,
-    })
-  })()
-
+      if (!ok) throw new Error(handle.job.output.at(-1) ?? `${title} failed.`)
+      return { message: `${title}: done.` }
+    },
+  )
+  last = job.id
   return { ok: true, message: `${title} started.` }
 }
 
 export async function upgradePackages(name: string | null) {
   if (!backend) return { ok: false, message: UNSUPPORTED }
-  if (name === null) return start('Installing all updates', backend.upgradeCommand(null), { action: 'Installed all updates' })
-  if (!backend.canUpgradeOne) return { ok: false, message: 'This system only supports installing all updates at once.' }
-  if (!PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
-  return start(`Updating ${name}`, backend.upgradeCommand(name), { action: 'Updated package', target: name })
+  if (name !== null && !backend.canUpgradeOne) return { ok: false, message: 'This system only supports installing all updates at once.' }
+  if (name !== null && !PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
+  const plan = await updatePlan(name).catch(() => null)
+  const estimate = plan?.ok ? plan.seconds : null
+  if (name === null) return start('Installing all updates', backend.upgradeCommand(null), { action: 'Installed all updates' }, estimate)
+  return start(`Updating ${name}`, backend.upgradeCommand(name), { action: 'Updated package', target: name }, estimate)
 }
 
 export async function removePackage(name: string, purge: boolean) {
@@ -188,4 +200,166 @@ export async function removePackage(name: string, purge: boolean) {
     action: withSettings ? 'Uninstalled package and its settings' : 'Uninstalled package',
     target: name,
   })
+}
+
+// ---- Update plan --------------------------------------------------------------------
+
+export interface PlanPackage {
+  name: string
+  download: number | null
+  /** Installed size after the update minus before; null when unknown. */
+  change: number | null
+  cached: boolean
+  restart: boolean
+}
+
+export interface DiskImpact {
+  mount: string
+  free: number
+  size: number
+  /** Free space once the update is installed, and at the lowest point while it runs. */
+  after: number
+  during: number
+  uses: string[]
+}
+
+export interface UpdatePlan {
+  ok: true
+  name: string | null
+  count: number
+  packages: PlanPackage[]
+  download: number
+  cachedBytes: number
+  change: number
+  /** Packages whose sizes the package manager did not report. */
+  unknown: number
+  disks: DiskImpact[]
+  seconds: number
+  /** How many earlier updates on this server the time estimate is based on. */
+  learnedFrom: number
+  restart: string[]
+  keptBack: string[]
+  warnings: string[]
+}
+
+/** Updates to these usually only take full effect after a restart of the server. */
+const NEEDS_RESTART = /^(linux-(image|modules|headers)|linux(-lts|-zen|-hardened|-virt)?$|kernel(-core|-modules|-default)?$|libc6$|glibc$|systemd$|dbus|libssl|openssl$|microcode|intel-ucode|amd-ucode|linux-firmware)/
+
+const CACHE_DIR: Record<string, string> = {
+  apt: '/var/cache/apt/archives',
+  dnf: '/var/cache/dnf',
+  yum: '/var/cache/yum',
+  zypper: '/var/cache/zypp',
+  pacman: '/var/cache/pacman/pkg',
+  apk: '/var/cache/apk',
+}
+/** Managers that remove downloaded packages once installed, by default. */
+const DROPS_CACHE = new Set(['dnf', 'yum', 'zypper', 'apk'])
+
+/** Seconds a run takes before the learned correction: downloading, then unpacking and configuring each package. */
+function baseSeconds(download: number, packages: number, installed: number): number {
+  return 8 + download / (5 * 1024 ** 2) + packages * 1.5 + installed / (40 * 1024 ** 2)
+}
+
+function learned(): { factor: number; runs: number } {
+  const factor = Number(getSetting('pkg_time_factor')) || 1
+  const runs = Number(getSetting('pkg_time_runs')) || 0
+  return { factor, runs }
+}
+
+/** After an update, moves the estimate towards what this server really took. */
+function learn(predicted: number, actual: number) {
+  if (predicted <= 0 || actual <= 0) return
+  const { factor, runs } = learned()
+  const seen = Math.min(5, Math.max(0.2, actual / predicted))
+  const next = runs ? factor * 0.6 + seen * 0.4 : seen
+  setSetting('pkg_time_factor', String(Math.round(next * 1000) / 1000))
+  setSetting('pkg_time_runs', String(runs + 1))
+}
+
+const mountOf = <T extends { mount: string }>(path: string, mounts: T[]): T | undefined =>
+  mounts.filter((fs) => fs.mount === '/' || path === fs.mount || path.startsWith(`${fs.mount}/`)).sort((a, b) => b.mount.length - a.mount.length)[0]
+
+let planCache: { key: string; at: number; plan: UpdatePlan } | null = null
+
+/** What installing one update, or all of them, will take: download, disk space, time and restarts. */
+export async function updatePlan(name: string | null): Promise<UpdatePlan | { ok: false; message: string }> {
+  if (!backend) return { ok: false, message: UNSUPPORTED }
+  if (name !== null && !PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
+  const state = await packageState()
+  const key = `${name}|${state.checkedAt}`
+  if (planCache?.key === key && Date.now() - planCache.at < 120_000) return planCache.plan
+
+  const upgrades: Upgrade[] = name === null ? state.upgrades : state.upgrades.filter((item) => item.name === name)
+  if (name !== null && !upgrades.length) return { ok: false, message: 'There is no update for that package.' }
+
+  const [sizes, installed, keptBack, disks] = await Promise.all([
+    backend.sizes?.(upgrades).catch(() => new Map<string, UpgradeSize>()) ?? Promise.resolve(new Map<string, UpgradeSize>()),
+    installedPackages(),
+    name === null && backend.keptBack ? backend.keptBack().catch(() => []) : Promise.resolve([] as string[]),
+    filesystems(),
+  ])
+  const current = new Map(installed.flatMap((item) => [[item.name, item.size], [item.name.split(':')[0]!, item.size]] as const))
+
+  const packages: PlanPackage[] = upgrades.map((item) => {
+    const size = sizes.get(item.name) ?? sizes.get(item.name.split(':')[0]!)
+    const before = current.get(item.name) ?? current.get(item.name.split(':')[0]!)
+    return {
+      name: item.name,
+      download: size?.download ?? null,
+      change: size?.installed != null && before != null ? size.installed - before : null,
+      cached: size?.cached ?? false,
+      restart: NEEDS_RESTART.test(item.name),
+    }
+  })
+
+  const download = packages.reduce((sum, item) => sum + (!item.cached ? item.download ?? 0 : 0), 0)
+  const cachedBytes = packages.reduce((sum, item) => sum + (item.cached ? item.download ?? 0 : 0), 0)
+  const change = packages.reduce((sum, item) => sum + (item.change ?? 0), 0)
+  const unknown = packages.filter((item) => item.download === null && item.change === null).length
+  const installedBytes = upgrades.reduce((sum, item) => sum + (sizes.get(item.name)?.installed ?? 0), 0)
+
+  // Programs land on the disk holding /usr; downloads wait on the disk holding the package cache.
+  const usr = mountOf('/usr', disks)
+  const cache = mountOf(CACHE_DIR[backend.id] ?? '/var/cache', disks)
+  const impact = new Map<string, DiskImpact>()
+  const touch = (fs: (typeof disks)[number] | undefined, use: string, during: number, after: number) => {
+    if (!fs) return
+    const entry = impact.get(fs.mount) ?? { mount: fs.mount, free: fs.available, size: fs.size, after: fs.available, during: fs.available, uses: [] }
+    entry.uses.push(use)
+    entry.after -= after
+    entry.during -= during
+    impact.set(fs.mount, entry)
+  }
+  touch(usr, 'programs', Math.max(0, change), change)
+  touch(cache, 'downloads', download, DROPS_CACHE.has(backend.id) ? 0 : download)
+
+  const { factor, runs } = learned()
+  const seconds = Math.round(baseSeconds(download, upgrades.length, installedBytes) * factor)
+
+  const warnings: string[] = []
+  for (const disk of impact.values()) {
+    if (disk.during < 0) warnings.push(`${disk.mount} does not have enough free space: about ${formatBytes(-disk.during)} more is needed.`)
+    else if (disk.size && disk.during / disk.size < 0.05) warnings.push(`${disk.mount} will be almost full while updating. Free some space first.`)
+  }
+  if (unknown) warnings.push(`${unknown === upgrades.length ? 'The package manager does not report sizes' : `No sizes for ${unknown} of the packages`}, so the totals are lower than the real ones.`)
+
+  const plan: UpdatePlan = {
+    ok: true,
+    name,
+    count: upgrades.length,
+    packages,
+    download,
+    cachedBytes,
+    change,
+    unknown,
+    disks: [...impact.values()],
+    seconds,
+    learnedFrom: runs,
+    restart: packages.filter((item) => item.restart).map((item) => item.name),
+    keptBack,
+    warnings,
+  }
+  planCache = { key, at: Date.now(), plan }
+  return plan
 }

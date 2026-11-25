@@ -39,3 +39,20 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 export function dateTime(timestamp: number): string {
   return dateTimeFormat.format(timestamp)
 }
+
+/** A length of time in milliseconds, short: 4 s, 2 min 10 s, 1 h 5 min. */
+export function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds} s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return seconds % 60 ? `${minutes} min ${seconds % 60} s` : `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`
+}
+
+/** A size change with its sign: +12 MB, −3.4 MB. */
+export function signedBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  if (value === 0) return '0 B'
+  return `${value > 0 ? '+' : '−'}${bytes(Math.abs(value))}`
+}
