@@ -23,6 +23,14 @@ export interface InstalledPackage {
   locked: boolean
 }
 
+/** Sizes of the version an update installs, in bytes; null where the package manager does not say. */
+export interface UpgradeSize {
+  download: number | null
+  installed: number | null
+  /** Already downloaded, so nothing is fetched for it. */
+  cached: boolean
+}
+
 export interface Simulation {
   ok: boolean
   /** Every package the removal would take away, the requested one included. */
@@ -40,6 +48,10 @@ export interface Backend {
   tracksSecurity: boolean
   env: Record<string, string>
   upgrades(): Promise<Upgrade[]>
+  /** Download and installed sizes of the versions the updates bring. */
+  sizes?(upgrades: Upgrade[]): Promise<Map<string, UpgradeSize>>
+  /** Updates the manager will not install with a plain upgrade, such as apt's "kept back". */
+  keptBack?(): Promise<string[]>
   refresh(): Promise<RunResult>
   indexAge(): Promise<number | null>
   reboot(): Promise<{ required: boolean; packages: string[] }>
@@ -170,6 +182,37 @@ const apt: Backend = {
     }
     return list
   },
+  async sizes(upgrades) {
+    const sizes = new Map<string, UpgradeSize>()
+    for (let index = 0; index < upgrades.length; index += 300) {
+      const batch = upgrades.slice(index, index + 300)
+      const result = await run(['apt-cache', 'show', '--no-all-versions', ...batch.map((item) => `${item.name}=${item.next}`)], { timeout: 60_000 })
+      for (const block of result.stdout.split(/\n\s*\n/)) {
+        const field = (key: string) => block.match(new RegExp(`^${key}: (.*)$`, 'm'))?.[1]?.trim() ?? ''
+        const name = field('Package')
+        if (!name || sizes.has(name)) continue
+        const file = decodeURIComponent(field('Filename').split('/').pop() ?? '')
+        sizes.set(name, {
+          download: Number(field('Size')) || null,
+          installed: (Number(field('Installed-Size')) || 0) * 1024 || null,
+          cached: !!file && existsSync(`/var/cache/apt/archives/${file}`),
+        })
+      }
+    }
+    return sizes
+  },
+  async keptBack() {
+    const result = await run(['apt-get', '-s', '-o', 'Debug::NoLocking=1', 'upgrade'], { timeout: 60_000, env: APT_ENV })
+    const text = result.stdout.split('\n')
+    const start = text.findIndex((line) => /kept back:$/.test(line))
+    if (start < 0) return []
+    const names: string[] = []
+    for (const line of text.slice(start + 1)) {
+      if (!line.startsWith(' ')) break
+      names.push(...line.trim().split(/\s+/))
+    }
+    return names
+  },
   refresh: () => run(['apt-get', 'update', '-q'], { timeout: 180_000, env: APT_ENV }),
   indexAge: async () => newestChange(['/var/lib/apt/periodic/update-success-stamp', '/var/cache/apt/pkgcache.bin']),
   async reboot() {
@@ -294,6 +337,17 @@ function dnfLike(id: 'dnf' | 'yum'): Backend {
         }
       }
       return found.map((item) => ({ name: item.name, next: item.next, current: current.get(item.name) ?? '', security: security.has(item.name) }))
+    },
+    async sizes(upgrades) {
+      const sizes = new Map<string, UpgradeSize>()
+      if (!upgrades.length || !has('dnf')) return sizes
+      const format = isDnf5() ? '%{name}\\t%{download_size}\\t%{install_size}\\n' : '%{name}\\t%{downloadsize}\\t%{installsize}'
+      const result = await run(['dnf', '-q', 'repoquery', '--upgrades', '--latest-limit', '1', '--queryformat', format], { timeout: 180_000 })
+      for (const line of lines(result.stdout)) {
+        const [name, download, installed] = line.split('\t')
+        if (name && !sizes.has(name)) sizes.set(name, { download: Number(download) || null, installed: Number(installed) || null, cached: false })
+      }
+      return sizes
     },
     refresh: () => run([id, '-q', 'makecache', '--refresh'], { timeout: 300_000 }),
     indexAge: async () => newestChange(['/var/cache/dnf', '/var/cache/libdnf5', '/var/cache/yum']),
@@ -424,6 +478,25 @@ const pacman: Backend = {
     }
     // Only full upgrades are offered on Arch, so syncing the database cannot leave a partial upgrade behind.
     return run(['pacman', '-Sy', '--noconfirm'], { timeout: 300_000 })
+  },
+  async sizes(upgrades) {
+    const sizes = new Map<string, UpgradeSize>()
+    if (!upgrades.length) return sizes
+    const result = await run(['pacman', '-Si', ...upgrades.map((item) => item.name)], { timeout: 60_000 })
+    for (const block of result.stdout.split(/\n\s*\n/)) {
+      const field = (key: string) => block.match(new RegExp(`^${key}\\s*:\\s*(.*)$`, 'm'))?.[1]?.trim() ?? ''
+      const name = field('Name')
+      if (!name || sizes.has(name)) continue
+      const version = field('Version')
+      let cached = false
+      try {
+        cached = readdirSync('/var/cache/pacman/pkg').some((file) => file.startsWith(`${name}-${version}-`) && !file.endsWith('.sig'))
+      } catch {
+        // No package cache.
+      }
+      sizes.set(name, { download: unitSize(field('Download Size')) || null, installed: unitSize(field('Installed Size')) || null, cached })
+    }
+    return sizes
   },
   indexAge: async () => newestChange(['/var/lib/pacman/sync']),
   reboot: async () => ({ required: kernelReboot(), packages: [] }),

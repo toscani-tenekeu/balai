@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { CircleCheckIcon, RefreshCwIcon, SearchIcon, TriangleAlertIcon } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import LoadError from '@/components/LoadError.vue'
+import UpdatePlanSummary from '@/components/packages/UpdatePlanSummary.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -23,8 +24,8 @@ import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableR
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useResource } from '@/composables/useResource'
 import { api, messageOf, post } from '@/lib/api'
-import { bytes, duration } from '@/lib/format'
-import type { ActionResult, InstalledPackage, PackageJob, PackageState, RemovalPlan } from '@/lib/types'
+import { bytes, duration, signedBytes } from '@/lib/format'
+import type { ActionResult, InstalledPackage, PackageJob, PackageState, PlanPackage, RemovalPlan, UpdatePlan } from '@/lib/types'
 
 type Pending =
   | { kind: 'upgrade'; name: string | null }
@@ -45,6 +46,39 @@ const showJob = ref(false)
 let timer: ReturnType<typeof setInterval> | undefined
 
 const security = computed(() => data.value?.upgrades.filter((item) => item.security).length ?? 0)
+
+// What installing everything takes: download, disk space, time. Worked out again whenever the list changes.
+const plan = ref<UpdatePlan | null>(null)
+const planError = ref('')
+async function loadPlan() {
+  if (!data.value?.upgrades.length) {
+    plan.value = null
+    return
+  }
+  planError.value = ''
+  try {
+    plan.value = await api<UpdatePlan>('/packages/plan')
+  } catch (failure) {
+    planError.value = messageOf(failure)
+  }
+}
+watch(() => data.value?.checkedAt, () => void loadPlan())
+const sizeOf = computed(() => new Map<string, PlanPackage>((plan.value?.packages ?? []).map((item) => [item.name, item])))
+
+// The plan for the one update being confirmed.
+const onePlan = ref<UpdatePlan | null>(null)
+const onePlanError = ref('')
+
+const updateFilter = ref('all')
+const updateSearch = ref('')
+const shownUpdates = computed(() => {
+  const term = updateSearch.value.trim().toLowerCase()
+  return (data.value?.upgrades ?? []).filter((item) => {
+    if (updateFilter.value === 'security' && !item.security) return false
+    if (updateFilter.value === 'restart' && !sizeOf.value.get(item.name)?.restart) return false
+    return !term || item.name.toLowerCase().includes(term)
+  })
+})
 const busy = computed(() => job.value?.running === true)
 
 const matching = computed(() => {
@@ -81,6 +115,21 @@ async function askRemove(item: InstalledPackage) {
 
 const removal = computed(() => (pending.value?.kind === 'remove' ? pending.value : null))
 const upgrade = computed(() => (pending.value?.kind === 'upgrade' ? pending.value : null))
+watch(upgrade, async (target) => {
+  onePlan.value = null
+  onePlanError.value = ''
+  if (!target) return
+  if (target.name === null) {
+    onePlan.value = plan.value
+    if (plan.value) return
+  }
+  try {
+    const answer = await api<UpdatePlan>(`/packages/plan${target.name ? `?name=${encodeURIComponent(target.name)}` : ''}`)
+    if (upgrade.value === target) onePlan.value = answer
+  } catch (failure) {
+    if (upgrade.value === target) onePlanError.value = messageOf(failure)
+  }
+})
 const blocked = computed(() => (removal.value?.plan?.blocked.length ?? 0) > 0)
 const others = computed(() => removal.value?.plan?.removed.filter((name) => name !== removal.value?.name) ?? [])
 
@@ -192,6 +241,22 @@ onBeforeUnmount(() => clearInterval(timer))
             </Button>
           </CardAction>
         </CardHeader>
+        <CardContent v-if="data?.upgrades.length" class="flex flex-col gap-4">
+          <UpdatePlanSummary :plan="plan" :error="planError" />
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="relative w-full max-w-xs">
+              <SearchIcon class="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+              <Input v-model="updateSearch" class="pl-8" placeholder="Filter updates" aria-label="Filter updates" />
+            </div>
+            <Tabs v-model="updateFilter">
+              <TabsList>
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger v-if="data.tracksSecurity" value="security">Security {{ security }}</TabsTrigger>
+                <TabsTrigger v-if="plan?.restart.length" value="restart">Need a restart {{ plan.restart.length }}</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        </CardContent>
         <CardContent>
           <template v-if="data">
             <Table v-if="data.upgrades.length">
@@ -201,16 +266,26 @@ onBeforeUnmount(() => clearInterval(timer))
                   <TableHead>Installed</TableHead>
                   <TableHead>Available</TableHead>
                   <TableHead v-if="data.tracksSecurity">Type</TableHead>
+                  <TableHead class="text-right">Download</TableHead>
+                  <TableHead class="text-right">Size change</TableHead>
                   <TableHead class="w-20"><span class="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                <TableRow v-for="item in data.upgrades" :key="item.name">
+                <TableRow v-for="item in shownUpdates" :key="item.name">
                   <TableCell class="font-medium">{{ item.name }}</TableCell>
                   <TableCell class="text-muted-foreground max-w-48 truncate font-mono text-xs">{{ item.current }}</TableCell>
                   <TableCell class="max-w-48 truncate font-mono text-xs">{{ item.next }}</TableCell>
                   <TableCell v-if="data.tracksSecurity">
                     <StatusBadge :tone="item.security ? 'bad' : 'idle'">{{ item.security ? 'Security' : 'Regular' }}</StatusBadge>
+                  </TableCell>
+                  <TableCell class="text-muted-foreground text-right whitespace-nowrap tabular-nums">
+                    <template v-if="sizeOf.get(item.name)?.cached">Downloaded</template>
+                    <template v-else-if="sizeOf.get(item.name)?.download != null">{{ bytes(sizeOf.get(item.name)!.download) }}</template>
+                    <template v-else>—</template>
+                  </TableCell>
+                  <TableCell class="text-muted-foreground text-right whitespace-nowrap tabular-nums">
+                    {{ signedBytes(sizeOf.get(item.name)?.change) }}
                   </TableCell>
                   <TableCell class="text-right">
                     <Button
@@ -224,6 +299,7 @@ onBeforeUnmount(() => clearInterval(timer))
                     </Button>
                   </TableCell>
                 </TableRow>
+                <TableEmpty v-if="!shownUpdates.length" :colspan="8">No update matches.</TableEmpty>
               </TableBody>
             </Table>
             <Empty v-else>
@@ -294,7 +370,7 @@ onBeforeUnmount(() => clearInterval(timer))
   </Tabs>
 
   <AlertDialog :open="!!upgrade" @update:open="(open: boolean) => { if (!open) pending = null }">
-    <AlertDialogContent v-if="upgrade">
+    <AlertDialogContent v-if="upgrade" class="sm:max-w-xl!">
       <AlertDialogHeader>
         <AlertDialogTitle>
           {{ upgrade.name ? `Update ${upgrade.name}?` : `Install all ${data?.upgrades.length ?? ''} updates?` }}
@@ -302,9 +378,10 @@ onBeforeUnmount(() => clearInterval(timer))
         <AlertDialogDescription>
           Depending on the system, services that belong to an updated package restart during the installation and can be
           unavailable for a moment, or keep running the old version until they are restarted. Your configuration files are
-          kept as they are. A kernel update only takes effect after a server restart.
+          kept as they are.
         </AlertDialogDescription>
       </AlertDialogHeader>
+      <UpdatePlanSummary :plan="onePlan" :error="onePlanError" compact />
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
         <Button @click="confirm">{{ upgrade.name ? 'Update' : 'Install all' }}</Button>

@@ -1,7 +1,8 @@
-import { logActivity } from './db.ts'
-import { backend, type InstalledPackage, type Upgrade } from './pm.ts'
+import { getSetting, logActivity, setSetting } from './db.ts'
+import { filesystems } from './metrics.ts'
+import { backend, type InstalledPackage, type Upgrade, type UpgradeSize } from './pm.ts'
 import { getJob, runningJob, startJob } from './jobs.ts'
-import { eachLine, reason, spawn } from './sys.ts'
+import { eachLine, formatBytes, reason, spawn } from './sys.ts'
 
 export type { InstalledPackage, Upgrade } from './pm.ts'
 
@@ -131,7 +132,12 @@ export const packageJobRunning = () => runningJob('packages') !== null
 const PROGRESS = /^\(Reading database \.\.\. \d*%?$/
 
 /** Package work can take minutes, so it runs as a task and the interface follows its output. */
-function start(title: string, cmd: string[], entry: { action: string; target?: string }): { ok: boolean; message: string } {
+function start(
+  title: string,
+  cmd: string[],
+  entry: { action: string; target?: string },
+  estimate: number | null = null,
+): { ok: boolean; message: string } {
   if (packageJobRunning()) return { ok: false, message: 'Another package operation is still running.' }
   const job = startJob(
     {
@@ -156,6 +162,8 @@ function start(title: string, cmd: string[], entry: { action: string; target?: s
         handle.log(error instanceof Error ? error.message : String(error))
       }
       cache = null
+      planCache = null
+      if (ok && estimate) learn(estimate / learned().factor, (Date.now() - handle.job.startedAt) / 1000)
       logActivity({
         area: 'packages',
         action: ok ? entry.action : `${entry.action}: failed`,
@@ -173,10 +181,12 @@ function start(title: string, cmd: string[], entry: { action: string; target?: s
 
 export async function upgradePackages(name: string | null) {
   if (!backend) return { ok: false, message: UNSUPPORTED }
-  if (name === null) return start('Installing all updates', backend.upgradeCommand(null), { action: 'Installed all updates' })
-  if (!backend.canUpgradeOne) return { ok: false, message: 'This system only supports installing all updates at once.' }
-  if (!PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
-  return start(`Updating ${name}`, backend.upgradeCommand(name), { action: 'Updated package', target: name })
+  if (name !== null && !backend.canUpgradeOne) return { ok: false, message: 'This system only supports installing all updates at once.' }
+  if (name !== null && !PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
+  const plan = await updatePlan(name).catch(() => null)
+  const estimate = plan?.ok ? plan.seconds : null
+  if (name === null) return start('Installing all updates', backend.upgradeCommand(null), { action: 'Installed all updates' }, estimate)
+  return start(`Updating ${name}`, backend.upgradeCommand(name), { action: 'Updated package', target: name }, estimate)
 }
 
 export async function removePackage(name: string, purge: boolean) {
@@ -190,4 +200,166 @@ export async function removePackage(name: string, purge: boolean) {
     action: withSettings ? 'Uninstalled package and its settings' : 'Uninstalled package',
     target: name,
   })
+}
+
+// ---- Update plan --------------------------------------------------------------------
+
+export interface PlanPackage {
+  name: string
+  download: number | null
+  /** Installed size after the update minus before; null when unknown. */
+  change: number | null
+  cached: boolean
+  restart: boolean
+}
+
+export interface DiskImpact {
+  mount: string
+  free: number
+  size: number
+  /** Free space once the update is installed, and at the lowest point while it runs. */
+  after: number
+  during: number
+  uses: string[]
+}
+
+export interface UpdatePlan {
+  ok: true
+  name: string | null
+  count: number
+  packages: PlanPackage[]
+  download: number
+  cachedBytes: number
+  change: number
+  /** Packages whose sizes the package manager did not report. */
+  unknown: number
+  disks: DiskImpact[]
+  seconds: number
+  /** How many earlier updates on this server the time estimate is based on. */
+  learnedFrom: number
+  restart: string[]
+  keptBack: string[]
+  warnings: string[]
+}
+
+/** Updates to these usually only take full effect after a restart of the server. */
+const NEEDS_RESTART = /^(linux-(image|modules|headers)|linux(-lts|-zen|-hardened|-virt)?$|kernel(-core|-modules|-default)?$|libc6$|glibc$|systemd$|dbus|libssl|openssl$|microcode|intel-ucode|amd-ucode|linux-firmware)/
+
+const CACHE_DIR: Record<string, string> = {
+  apt: '/var/cache/apt/archives',
+  dnf: '/var/cache/dnf',
+  yum: '/var/cache/yum',
+  zypper: '/var/cache/zypp',
+  pacman: '/var/cache/pacman/pkg',
+  apk: '/var/cache/apk',
+}
+/** Managers that remove downloaded packages once installed, by default. */
+const DROPS_CACHE = new Set(['dnf', 'yum', 'zypper', 'apk'])
+
+/** Seconds a run takes before the learned correction: downloading, then unpacking and configuring each package. */
+function baseSeconds(download: number, packages: number, installed: number): number {
+  return 8 + download / (5 * 1024 ** 2) + packages * 1.5 + installed / (40 * 1024 ** 2)
+}
+
+function learned(): { factor: number; runs: number } {
+  const factor = Number(getSetting('pkg_time_factor')) || 1
+  const runs = Number(getSetting('pkg_time_runs')) || 0
+  return { factor, runs }
+}
+
+/** After an update, moves the estimate towards what this server really took. */
+function learn(predicted: number, actual: number) {
+  if (predicted <= 0 || actual <= 0) return
+  const { factor, runs } = learned()
+  const seen = Math.min(5, Math.max(0.2, actual / predicted))
+  const next = runs ? factor * 0.6 + seen * 0.4 : seen
+  setSetting('pkg_time_factor', String(Math.round(next * 1000) / 1000))
+  setSetting('pkg_time_runs', String(runs + 1))
+}
+
+const mountOf = <T extends { mount: string }>(path: string, mounts: T[]): T | undefined =>
+  mounts.filter((fs) => fs.mount === '/' || path === fs.mount || path.startsWith(`${fs.mount}/`)).sort((a, b) => b.mount.length - a.mount.length)[0]
+
+let planCache: { key: string; at: number; plan: UpdatePlan } | null = null
+
+/** What installing one update, or all of them, will take: download, disk space, time and restarts. */
+export async function updatePlan(name: string | null): Promise<UpdatePlan | { ok: false; message: string }> {
+  if (!backend) return { ok: false, message: UNSUPPORTED }
+  if (name !== null && !PACKAGE.test(name)) return { ok: false, message: 'Invalid package name.' }
+  const state = await packageState()
+  const key = `${name}|${state.checkedAt}`
+  if (planCache?.key === key && Date.now() - planCache.at < 120_000) return planCache.plan
+
+  const upgrades: Upgrade[] = name === null ? state.upgrades : state.upgrades.filter((item) => item.name === name)
+  if (name !== null && !upgrades.length) return { ok: false, message: 'There is no update for that package.' }
+
+  const [sizes, installed, keptBack, disks] = await Promise.all([
+    backend.sizes?.(upgrades).catch(() => new Map<string, UpgradeSize>()) ?? Promise.resolve(new Map<string, UpgradeSize>()),
+    installedPackages(),
+    name === null && backend.keptBack ? backend.keptBack().catch(() => []) : Promise.resolve([] as string[]),
+    filesystems(),
+  ])
+  const current = new Map(installed.flatMap((item) => [[item.name, item.size], [item.name.split(':')[0]!, item.size]] as const))
+
+  const packages: PlanPackage[] = upgrades.map((item) => {
+    const size = sizes.get(item.name) ?? sizes.get(item.name.split(':')[0]!)
+    const before = current.get(item.name) ?? current.get(item.name.split(':')[0]!)
+    return {
+      name: item.name,
+      download: size?.download ?? null,
+      change: size?.installed != null && before != null ? size.installed - before : null,
+      cached: size?.cached ?? false,
+      restart: NEEDS_RESTART.test(item.name),
+    }
+  })
+
+  const download = packages.reduce((sum, item) => sum + (!item.cached ? item.download ?? 0 : 0), 0)
+  const cachedBytes = packages.reduce((sum, item) => sum + (item.cached ? item.download ?? 0 : 0), 0)
+  const change = packages.reduce((sum, item) => sum + (item.change ?? 0), 0)
+  const unknown = packages.filter((item) => item.download === null && item.change === null).length
+  const installedBytes = upgrades.reduce((sum, item) => sum + (sizes.get(item.name)?.installed ?? 0), 0)
+
+  // Programs land on the disk holding /usr; downloads wait on the disk holding the package cache.
+  const usr = mountOf('/usr', disks)
+  const cache = mountOf(CACHE_DIR[backend.id] ?? '/var/cache', disks)
+  const impact = new Map<string, DiskImpact>()
+  const touch = (fs: (typeof disks)[number] | undefined, use: string, during: number, after: number) => {
+    if (!fs) return
+    const entry = impact.get(fs.mount) ?? { mount: fs.mount, free: fs.available, size: fs.size, after: fs.available, during: fs.available, uses: [] }
+    entry.uses.push(use)
+    entry.after -= after
+    entry.during -= during
+    impact.set(fs.mount, entry)
+  }
+  touch(usr, 'programs', Math.max(0, change), change)
+  touch(cache, 'downloads', download, DROPS_CACHE.has(backend.id) ? 0 : download)
+
+  const { factor, runs } = learned()
+  const seconds = Math.round(baseSeconds(download, upgrades.length, installedBytes) * factor)
+
+  const warnings: string[] = []
+  for (const disk of impact.values()) {
+    if (disk.during < 0) warnings.push(`${disk.mount} does not have enough free space: about ${formatBytes(-disk.during)} more is needed.`)
+    else if (disk.size && disk.during / disk.size < 0.05) warnings.push(`${disk.mount} will be almost full while updating. Free some space first.`)
+  }
+  if (unknown) warnings.push(`${unknown === upgrades.length ? 'The package manager does not report sizes' : `No sizes for ${unknown} of the packages`}, so the totals are lower than the real ones.`)
+
+  const plan: UpdatePlan = {
+    ok: true,
+    name,
+    count: upgrades.length,
+    packages,
+    download,
+    cachedBytes,
+    change,
+    unknown,
+    disks: [...impact.values()],
+    seconds,
+    learnedFrom: runs,
+    restart: packages.filter((item) => item.restart).map((item) => item.name),
+    keptBack,
+    warnings,
+  }
+  planCache = { key, at: Date.now(), plan }
+  return plan
 }

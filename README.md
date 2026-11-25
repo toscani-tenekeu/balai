@@ -31,11 +31,14 @@ Balai is organised in four sections, each with a few tabs.
 | --- | --- |
 | **Overview** | CPU, memory, swap and disk at a glance, a usage chart for the last hour, day or week, and health checks: full disks, exhausted inodes, low memory, heavy swap, high load, failed services, zombie processes, pending security updates, a needed restart, out-of-memory kills and an unsynchronised clock. **Activity** keeps a record of everything done from the panel. |
 | **System** | **Processes**: what uses CPU and memory; stop or force stop. **Services**: start, stop, restart, enable or disable services (systemd, or OpenRC on Alpine) and read their logs. **Ports**: which programs listen, whether they are reachable from outside, and stop or restart what holds a port. |
-| **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 1 GB. **Cleanup**: the package cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, developer caches and more, each showing what it frees, with an optional weekly run. |
-| **Packages** | Available updates with security updates marked. Install one or all of them, and uninstall packages you no longer use. |
+| **Storage** | **Disk**: every filesystem, and a folder browser that shows where the space goes. **Files**: find files by extension, size or age anywhere, such as every `.zip` or everything over 250 MB, and see whether each one is used: live on a website (with its address, the pages that link to it and how often it was requested), in an old release, in a project and its git state, a copy of a live file, open in a program, or not used anywhere. **Cleanup**: the package cache, unused packages and old kernels, the journal, old logs, temporary files, crash reports, snap revisions, Docker leftovers, old website releases, developer caches and more, each showing what it frees, with an optional weekly run. |
+| **Packages** | Available updates with security updates marked, how much they download, how much space they take once installed, how long they should take on this server and how much free disk space is left afterwards. Updates held back and updates that need a restart are pointed out. Install one or all of them, and uninstall packages you no longer use. |
 
 Actions sit right on each row, and every action that changes the server asks for
-confirmation and says what it will do. Files and packages the operating system
+confirmation and says what it will do. Long work (searches, cleanups, deleting a large
+folder, package updates) runs as a task: the **Tasks** menu shows its progress, steps and
+output, and a task can be cancelled at once, stopping every program it started. Package
+installs are the exception and run to the end, as stopping them halfway can break packages. Files and packages the operating system
 needs are shown but cannot be removed. Balai also updates itself from **Settings**.
 
 <div align="center">

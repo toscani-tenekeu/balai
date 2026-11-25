@@ -14,7 +14,7 @@ import { health } from './health.ts'
 import { Cancelled, cancelJob, clearFinished, getJob, listJobs, scope } from './jobs.ts'
 import { history, overview, startSampling } from './metrics.ts'
 import {
-  installedPackages, packageJob, packageState, refreshIndex, removalPlan, removePackage, upgradePackages,
+  installedPackages, packageJob, packageState, refreshIndex, removalPlan, removePackage, updatePlan, upgradePackages,
 } from './packages.ts'
 import { listListeners } from './ports.ts'
 import { listProcesses, signalProcess } from './processes.ts'
@@ -64,6 +64,17 @@ function sameOrigin(req: Request): boolean {
 
 function validPassword(value: unknown): value is string {
   return typeof value === 'string' && value.length >= 10 && value.length <= 200
+}
+
+/**
+ * The visitor's address. Behind a reverse proxy on this machine every request comes from 127.0.0.1,
+ * so the address the proxy forwards is used, and only when the request really comes from the proxy.
+ */
+function clientAddress(req: Request, peer: string): string {
+  const local = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1'
+  if (!local) return peer
+  const forwarded = req.headers.get('x-real-ip') ?? req.headers.get('x-forwarded-for')?.split(',').at(-1)
+  return forwarded?.trim() || peer
 }
 
 async function api(req: Request, url: URL, address: string): Promise<Response> {
@@ -169,6 +180,11 @@ async function api(req: Request, url: URL, address: string): Promise<Response> {
 
   if (route === 'GET /packages/installed') return json(await installedPackages())
   if (route === 'GET /packages/job') return json({ job: packageJob() })
+
+  if (route === 'GET /packages/plan') {
+    const plan = await updatePlan(url.searchParams.get('name'))
+    return json(plan, plan.ok ? 200 : 400)
+  }
 
   if (route === 'GET /packages/removal') {
     const plan = await removalPlan(url.searchParams.get('name') ?? '')
@@ -303,7 +319,7 @@ const server = Bun.serve({
     const url = new URL(req.url)
     try {
       if (url.pathname.startsWith('/api/')) {
-        const address = srv.requestIP(req)?.address ?? 'unknown'
+        const address = clientAddress(req, srv.requestIP(req)?.address ?? 'unknown')
         // Programs run to answer a GET stop when the browser stops waiting for the answer.
         if (req.method === 'GET') return await scope.run({ signal: req.signal, job: null }, () => api(req, url, address))
         return await api(req, url, address)

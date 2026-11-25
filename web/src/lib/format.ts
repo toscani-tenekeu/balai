@@ -49,3 +49,10 @@ export function elapsed(ms: number): string {
   const hours = Math.floor(minutes / 60)
   return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`
 }
+
+/** A size change with its sign: +12 MB, −3.4 MB. */
+export function signedBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  if (value === 0) return '0 B'
+  return `${value > 0 ? '+' : '−'}${bytes(Math.abs(value))}`
+}

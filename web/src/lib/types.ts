@@ -254,3 +254,37 @@ export interface CleanupOutcome {
   results: CleanupResult['results']
   freed: number
 }
+
+export interface PlanPackage {
+  name: string
+  download: number | null
+  change: number | null
+  cached: boolean
+  restart: boolean
+}
+
+export interface DiskImpact {
+  mount: string
+  free: number
+  size: number
+  after: number
+  during: number
+  uses: string[]
+}
+
+export interface UpdatePlan {
+  ok: true
+  name: string | null
+  count: number
+  packages: PlanPackage[]
+  download: number
+  cachedBytes: number
+  change: number
+  unknown: number
+  disks: DiskImpact[]
+  seconds: number
+  learnedFrom: number
+  restart: string[]
+  keptBack: string[]
+  warnings: string[]
+}
