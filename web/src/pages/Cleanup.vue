@@ -89,6 +89,13 @@ const total = computed(() =>
   chosen.value.reduce((sum, item) => sum + (item.kind === 'disk' && item.id !== 'journal' ? item.bytes ?? 0 : 0), 0),
 )
 
+const SHOWN = 12
+
+function names(list: string[]): string {
+  const rest = list.length - SHOWN
+  return rest > 0 ? `${list.slice(0, SHOWN).join(', ')} and ${rest} more` : list.join(', ')
+}
+
 function size(item: CleanupItem): string {
   if (item.bytes === null) return item.note ?? ''
   return item.note ? `${bytes(item.bytes)} ${item.note}` : bytes(item.bytes)
@@ -186,6 +193,15 @@ async function run() {
           <FieldContent>
             <FieldLabel :for="`clean-${item.id}`">{{ item.title }}</FieldLabel>
             <FieldDescription>{{ item.description }}</FieldDescription>
+            <FieldDescription v-if="item.removes.length" class="break-words">
+              Would remove: {{ names(item.removes) }}
+            </FieldDescription>
+            <details v-if="item.keeps.length" class="text-muted-foreground text-sm">
+              <summary class="cursor-pointer">{{ item.keeps.length }} kept</summary>
+              <ul class="mt-1">
+                <li v-for="kept in item.keeps" :key="kept.name" class="break-words">{{ kept.name }}: {{ kept.reason }}</li>
+              </ul>
+            </details>
           </FieldContent>
           <span v-if="stepOf(item)" class="text-muted-foreground flex items-center gap-1.5 text-sm whitespace-nowrap">
             <Spinner v-if="stepOf(item)!.state === 'running'" />
@@ -236,6 +252,11 @@ async function run() {
           {{ chosen.map((item) => item.title).join(', ') }}. Removed files cannot be brought back.
         </AlertDialogDescription>
       </AlertDialogHeader>
+      <ul v-if="chosen.some((item) => item.removes.length)" class="max-h-60 space-y-2 overflow-y-auto text-sm">
+        <li v-for="item in chosen.filter((entry) => entry.removes.length)" :key="item.id" class="break-words">
+          <span class="font-medium">{{ item.title }}:</span> {{ item.removes.join(', ') }}
+        </li>
+      </ul>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
         <AlertDialogAction @click="run">Clean</AlertDialogAction>

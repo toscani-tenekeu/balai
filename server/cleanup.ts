@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSetting, logActivity, setSetting } from './db.ts'
+import { CONTAINER_AGE_DAYS, sortLeftovers, stoppedContainers, type Kept, type Selection } from './guards.ts'
 import { Cancelled, runningJob, startJob, step } from './jobs.ts'
 import { releaseSets, webRoots } from './sites.ts'
 import { backend } from './pm.ts'
@@ -9,6 +10,9 @@ import { formatBytes, has, lines, readText, reason, run } from './sys.ts'
 interface Measure {
   bytes: number | null
   note?: string
+  /** Names of what would go and of what stays, for items that remove things someone may miss. */
+  removes?: string[]
+  keeps?: Kept[]
 }
 
 interface Task {
@@ -188,11 +192,6 @@ async function oldSnaps(): Promise<SnapRevision[]> {
     }))
 }
 
-async function stoppedContainers(): Promise<string[]> {
-  const result = await run(['docker', 'ps', '-a', '--filter', 'status=exited', '--filter', 'status=dead', '--format', '{{.ID}}'])
-  return lines(result.stdout)
-}
-
 /**
  * Images no container uses, measured from the images and containers themselves. `docker system df`
  * cannot be trusted here: with the containerd image store it calls every image reclaimable, even
@@ -238,6 +237,14 @@ function freeableSize(dirs: string[]): number {
 
 const count = (items: unknown[], word: string) => `${items.length} ${word}${items.length === 1 ? '' : 's'}`
 
+/** A count for the size column, with the names behind it. */
+const selection = ({ removes, keeps }: Selection, word: string): Measure => ({
+  bytes: null,
+  note: keeps.length ? `${count(removes, word)}, ${keeps.length} kept` : count(removes, word),
+  removes,
+  keeps,
+})
+
 const pm = backend
 const pmEnv = pm?.env ?? {}
 const pmFailed = (result: { ok: boolean; stderr: string; stdout: string; code: number }, what: string) =>
@@ -272,7 +279,7 @@ const tasks: Task[] = [
     recommended: true,
     kind: 'disk',
     available: () => pm?.autoremove != null,
-    measure: async () => ({ bytes: null, note: count(await pm!.autoremove!.list(), 'package') }),
+    measure: async () => selection({ removes: await pm!.autoremove!.list(), keeps: [] }, 'package'),
     clean: async () => {
       const names = await pm!.autoremove!.list()
       if (!names.length) return { ok: true }
@@ -390,20 +397,24 @@ const tasks: Task[] = [
     id: 'docker-containers',
     title: 'Stopped Docker containers',
     description:
-      'Containers that have exited. Anything written inside them that is not in a volume is lost, so check that none is only paused on purpose.',
+      `Containers that stopped at least ${CONTAINER_AGE_DAYS} days ago and are not meant to run again. Those with a restart policy or belonging to a Compose project are kept. Anything written inside a removed container that is not in a volume is lost.`,
     recommended: false,
     kind: 'disk',
     available: () => has('docker'),
-    measure: async () => ({ bytes: null, note: count(await stoppedContainers(), 'container') }),
+    measure: async () => selection(await stoppedContainers(), 'container'),
     clean: async () => {
-      const result = await run(['docker', 'container', 'prune', '-f'], { timeout: 300_000 })
+      // Looked at again now, and removed by name: `docker container prune` would take every stopped one.
+      const { ids } = await stoppedContainers()
+      if (!ids.length) return { ok: true }
+      // Without --force, Docker refuses any that has started in the meantime.
+      const result = await run(['docker', 'rm', ...ids], { timeout: 300_000 })
       return { ok: result.ok, message: result.ok ? undefined : reason(result, 'docker prune failed.') }
     },
   },
   {
     id: 'docker-images',
     title: 'Unused Docker images',
-    description: 'Every image that no container uses, tagged or not. They are downloaded or built again when needed.',
+    description: 'Every image that no container uses, tagged or not. Downloaded ones are fetched again when needed; ones built on this server have to be built again.',
     recommended: false,
     kind: 'disk',
     available: () => has('docker'),
@@ -418,13 +429,13 @@ const tasks: Task[] = [
   {
     id: 'leftover-config',
     title: 'Settings of removed packages',
-    description: 'Configuration files left behind by packages that were uninstalled. Reinstalling one starts from its defaults.',
+    description: 'Configuration files left behind by packages that were uninstalled. Reinstalling one starts from its defaults. Packages whose removal could delete data or stop a service still on this server are kept.',
     recommended: false,
     kind: 'disk',
     available: () => pm?.leftovers != null,
-    measure: async () => ({ bytes: null, note: count(await pm!.leftovers!.list(), 'package') }),
+    measure: async () => selection(sortLeftovers(await pm!.leftovers!.list()), 'package'),
     clean: async () => {
-      const names = await pm!.leftovers!.list()
+      const names = sortLeftovers(await pm!.leftovers!.list()).removes
       if (!names.length) return { ok: true }
       const command = pm!.leftovers!.clean(names)
       return pmFailed(await run(command, { timeout: 300_000, env: pmEnv }), command[0]!)
@@ -529,6 +540,8 @@ export async function listCleanup() {
         kind: task.kind,
         bytes: measured.bytes,
         note: measured.note ?? null,
+        removes: measured.removes ?? [],
+        keeps: measured.keeps ?? [],
       }
     }),
   )
