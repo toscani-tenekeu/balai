@@ -1,4 +1,4 @@
-import { existsSync, renameSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { root } from './config.ts'
 import { getSetting, logActivity, setSetting } from './db.ts'
@@ -123,6 +123,13 @@ export async function applyUpdate(): Promise<{ ok: boolean; message: string }> {
 
     const live = join(web, 'dist')
     const old = join(web, 'dist-old')
+
+    // A tab can remain open across an update and request an old lazy-loaded
+    // chunk later. Keep old fingerprinted assets available after the swap.
+    if (existsSync(join(live, 'assets'))) {
+      cpSync(join(live, 'assets'), join(next, 'assets'), { recursive: true, force: false })
+    }
+
     rmSync(old, { recursive: true, force: true })
     if (existsSync(live)) renameSync(live, old)
     renameSync(next, live)

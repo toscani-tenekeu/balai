@@ -30,6 +30,24 @@ export const router = createRouter({
   ],
 })
 
+const chunkLoadError = /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk .* failed/i
+const chunkReloadKey = 'balai:chunk-reload-at'
+
+router.onError((error) => {
+  if (!chunkLoadError.test(error.message)) return
+
+  try {
+    const now = Date.now()
+    const lastReload = Number(window.sessionStorage.getItem(chunkReloadKey)) || 0
+    if (now - lastReload < 30_000) return
+    window.sessionStorage.setItem(chunkReloadKey, String(now))
+    window.location.reload()
+  } catch {
+    // If session storage is unavailable, leave the failed route visible instead
+    // of risking an endless reload loop.
+  }
+})
+
 router.beforeEach(async (to) => {
   if (to.meta.open) return true
   if (signedIn.value === null) await loadSession()
