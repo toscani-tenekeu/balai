@@ -309,7 +309,11 @@ async function asset(url: URL): Promise<Response> {
   const requested = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '')
   const file = join(config.webDir, requested)
   const inside = file.startsWith(config.webDir)
-  const target = inside && requested !== '/' && (await Bun.file(file).exists()) ? file : join(config.webDir, 'index.html')
+  const exists = inside && requested !== '/' && (await Bun.file(file).exists())
+  if (requested.startsWith('/assets/') && !exists) {
+    return new Response('Not found.', { status: 404, headers: HEADERS })
+  }
+  const target = exists ? file : join(config.webDir, 'index.html')
   const immutable = target.includes('/assets/')
   return new Response(Bun.file(target), {
     headers: { ...HEADERS, 'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' },
