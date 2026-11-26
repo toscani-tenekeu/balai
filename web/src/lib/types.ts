@@ -74,6 +74,9 @@ export interface CleanupItem {
   kind: 'disk' | 'memory'
   bytes: number | null
   note: string | null
+  /** Names of what would be removed and of what is kept, for items that list them. */
+  removes: string[]
+  keeps: { name: string; reason: string }[]
 }
 
 export interface CleanupResult {

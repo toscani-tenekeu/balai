@@ -259,7 +259,8 @@ const apt: Backend = {
       const result = await run(['apt-get', '-s', 'autoremove'], { timeout: 60_000, env: APT_ENV })
       return lines(result.stdout).map((line) => line.match(/^Remv (\S+)/)?.[1]).filter((item): item is string => !!item)
     },
-    clean: () => [...APT, 'autoremove', '--purge'],
+    // No --purge: removal scripts run on a purge can delete data. Settings have their own cleanup item.
+    clean: () => [...APT, 'autoremove'],
   },
   leftovers: {
     async list() {
